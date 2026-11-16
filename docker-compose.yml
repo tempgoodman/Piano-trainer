@@ -1,0 +1,37 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: anson-piano-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OMR_ALLOW_SAMPLE_FALLBACK=${OMR_ALLOW_SAMPLE_FALLBACK:-true}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - anson-piano-net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: anson-piano-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - anson-piano-net
+
+networks:
+  anson-piano-net:
+    driver: bridge

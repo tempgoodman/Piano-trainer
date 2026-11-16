@@ -1,0 +1,8 @@
+{
+  "name": "Anson Pratice Piano",
+  "description": "Interactive piano practice studio with OpenSheetMusicDisplay, Web MIDI, Virtual Keyboard, Wait Mode, Hand Separation, A/B Looping, and OMR sheet music upload.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
