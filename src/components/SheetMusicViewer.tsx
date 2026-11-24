@@ -12,6 +12,7 @@ import {
   RotateCcw,
   X,
 } from 'lucide-react';
+import { useFirebase } from '../context/FirebaseProvider';
 import { usePreferences } from '../context/PreferencesProvider';
 import { PlaybackScheduler } from '../engines/PlaybackScheduler';
 import { useOSMDInteract } from '../hooks/useOSMDInteract';
@@ -35,16 +36,18 @@ export function SheetMusicViewer({
   onReset,
   onOpenTutor,
 }: SheetMusicViewerProps) {
+  const { user, resendVerificationEmail, refreshUserVerification } = useFirebase();
   const { t } = usePreferences();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [verifyNotice, setVerifyNotice] = useState<string | null>(null);
+  const [isCheckingVerify, setIsCheckingVerify] = useState(false);
 
   const activeScore = usePracticeStore((s) => s.activeScore);
   const practiceMode = usePracticeStore((s) => s.practiceMode);
   const setPracticeMode = usePracticeStore((s) => s.setPracticeMode);
   const setBpm = usePracticeStore((s) => s.setBpm);
-  const showVirtualPiano = usePracticeStore((s) => s.showVirtualPiano);
   const showTempoGuide = usePracticeStore((s) => s.showTempoGuide);
   const isGuideAutoRevealed = usePracticeStore((s) => s.isGuideAutoRevealed);
   const playbackMode = usePracticeStore((s) => s.playbackMode);
@@ -173,6 +176,16 @@ export function SheetMusicViewer({
     ).sort((a, b) => a - b);
   }, [practiceStats, safeScoreId]);
 
+  const waitPracticedBarsCount = useMemo(() => {
+    const rec = practiceStats.find(
+      (r) => r.scoreId === safeScoreId && r.mode === 'wait' && r.bpm === 0
+    );
+    if (!rec) return 0;
+    return Object.values(rec.bars).filter(
+      (b) => b.practices > 0 || b.perfect + b.good + b.wrong + b.miss > 0
+    ).length;
+  }, [practiceStats, safeScoreId]);
+
   const activeStatRecord = useMemo(() => {
     return practiceStats.find((r) => {
       if (r.scoreId !== safeScoreId || r.mode !== statsFilterMode) return false;
@@ -199,7 +212,9 @@ export function SheetMusicViewer({
     let wrong = 0;
     let miss = 0;
     for (const bar of Object.values(activeStatRecord.bars)) {
-      if (bar.practices > 0) practicedBars++;
+      if (bar.practices > 0 || bar.perfect + bar.good + bar.wrong + bar.miss > 0) {
+        practicedBars++;
+      }
       totalBarPractices += bar.practices;
       perfect += bar.perfect;
       good += bar.good;
@@ -208,6 +223,13 @@ export function SheetMusicViewer({
     }
     return { practicedBars, totalBarPractices, perfect, good, wrong, miss };
   }, [activeStatRecord]);
+
+  const hasAnyStatsInActiveView =
+    statsAggregate.totalBarPractices > 0 ||
+    statsAggregate.perfect > 0 ||
+    statsAggregate.good > 0 ||
+    statsAggregate.wrong > 0 ||
+    statsAggregate.miss > 0;
 
   const selectedBarStats =
     statsSelectedBar !== null
@@ -243,11 +265,7 @@ export function SheetMusicViewer({
   const expectedLabel = expectedNotes.map((n) => n.noteName).join(' + ');
 
   return (
-    <div
-      className={`w-full max-w-[1360px] mx-auto px-6 pt-4 pb-3 ${
-        !showVirtualPiano ? 'flex-1 flex flex-col' : ''
-      }`}
-    >
+    <div className="flex-1 min-h-0 flex flex-col w-full px-4 sm:px-6 pt-3 pb-3">
       {/* Top Strip: Either Practice Stats Controls OR Normal Practice Telemetry */}
       {isStatsMode ? (
         <div className="mb-3 space-y-2.5 pb-3 border-b border-slate-200 dark:border-slate-800">
@@ -272,25 +290,35 @@ export function SheetMusicViewer({
                   type="button"
                   onClick={() => setStatsFilterMode('wait')}
                   aria-pressed={statsFilterMode === 'wait'}
-                  className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
                     statsFilterMode === 'wait'
                       ? 'bg-white dark:bg-slate-700 text-sky-700 dark:text-sky-300 shadow-xs'
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
                   }`}
                 >
-                  {t('controls.modeWaitFull')}
+                  <span>{t('controls.modeWaitFull')}</span>
+                  {waitPracticedBarsCount > 0 && (
+                    <span className="font-mono-tabular text-[10px] px-1 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300">
+                      {waitPracticedBarsCount}
+                    </span>
+                  )}
                 </button>
                 <button
                   type="button"
                   onClick={() => setStatsFilterMode('tempo')}
                   aria-pressed={statsFilterMode === 'tempo'}
-                  className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
                     statsFilterMode === 'tempo'
                       ? 'bg-white dark:bg-slate-700 text-sky-700 dark:text-sky-300 shadow-xs'
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
                   }`}
                 >
-                  {t('controls.modeTempoFull')}
+                  <span>{t('controls.modeTempoFull')}</span>
+                  {distinctTempoBpms.length > 0 && (
+                    <span className="font-mono-tabular text-[10px] px-1 py-0.5 rounded bg-sky-100 dark:bg-sky-950/70 text-sky-700 dark:text-sky-300">
+                      {distinctTempoBpms.length}
+                    </span>
+                  )}
                 </button>
               </div>
 
@@ -348,10 +376,55 @@ export function SheetMusicViewer({
             </button>
           </div>
 
+          {/* Unverified Email Warning (Firestore writes require email_verified == true) */}
+          {user && !user.emailVerified && (
+            <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 rounded-lg text-xs text-amber-900 dark:text-amber-200">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" aria-hidden="true" />
+                <span>{verifyNotice ?? t('stats.verifyRequired')}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isCheckingVerify}
+                  onClick={async () => {
+                    setIsCheckingVerify(true);
+                    try {
+                      await resendVerificationEmail();
+                      setVerifyNotice(t('stats.verificationSent'));
+                    } catch {
+                      // Ignore resend cooldown
+                    } finally {
+                      setIsCheckingVerify(false);
+                    }
+                  }}
+                  className="px-2.5 py-1 font-semibold bg-white dark:bg-slate-800 border border-amber-300 dark:border-amber-700 rounded-md hover:bg-amber-100 dark:hover:bg-amber-900/50 transition-colors disabled:opacity-50"
+                >
+                  {t('auth.resendEmailShort')}
+                </button>
+                <button
+                  type="button"
+                  disabled={isCheckingVerify}
+                  onClick={async () => {
+                    setIsCheckingVerify(true);
+                    try {
+                      await refreshUserVerification();
+                    } finally {
+                      setIsCheckingVerify(false);
+                    }
+                  }}
+                  className="px-2.5 py-1 font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-md transition-colors disabled:opacity-50"
+                >
+                  {isCheckingVerify ? t('auth.checking') : t('auth.verifiedShort')}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Summary Readout & Legend */}
           <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-600 dark:text-slate-300">
             <div className="flex flex-wrap items-center gap-3 font-mono-tabular">
-              {statsAggregate.totalBarPractices > 0 ? (
+              {hasAnyStatsInActiveView ? (
                 <>
                   <span className="font-sans font-medium text-slate-700 dark:text-slate-200">
                     {t('stats.barsPracticed', {
@@ -418,6 +491,49 @@ export function SheetMusicViewer({
               <span>{t('stats.clickBarHint')}</span>
             </div>
           </div>
+
+          {/* Compact Interactive Per-Bar Overview Strip */}
+          {hasAnyStatsInActiveView && totalMeasures > 0 && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+              {Array.from({ length: totalMeasures }, (_, idx) => {
+                const mNum = idx + 1;
+                const bar = activeStatRecord?.bars[String(mNum)];
+                const hasActivity = Boolean(
+                  bar && (bar.practices > 0 || bar.perfect + bar.good + bar.wrong + bar.miss > 0)
+                );
+                const acc = bar && hasActivity ? getBarAccuracyPercent(bar) : null;
+                const isSelected = statsSelectedBar === mNum;
+
+                const toneClass = isSelected
+                  ? 'bg-sky-600 text-white border-sky-600'
+                  : !hasActivity
+                  ? 'bg-slate-50 dark:bg-slate-800/70 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700 hover:border-slate-300'
+                  : acc === null || acc >= 90
+                  ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100'
+                  : acc >= 70
+                  ? 'bg-sky-50 dark:bg-sky-950/50 text-sky-800 dark:text-sky-300 border-sky-200 dark:border-sky-800 hover:bg-sky-100'
+                  : 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800 hover:bg-amber-100';
+
+                return (
+                  <button
+                    key={mNum}
+                    type="button"
+                    onClick={() => setStatsSelectedBar(isSelected ? null : mNum)}
+                    aria-pressed={isSelected}
+                    className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold font-mono-tabular rounded-md border transition-colors whitespace-nowrap shrink-0 ${toneClass}`}
+                  >
+                    <span>M{mNum}</span>
+                    <span className="opacity-85">
+                      {hasActivity && bar ? `${bar.practices}×` : '0×'}
+                    </span>
+                    {statsFilterMode === 'tempo' && acc !== null && (
+                      <span className="opacity-75">{acc}%</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Selected Bar Detail Inspector */}
           {statsSelectedBar !== null && selectedBarStats && (
@@ -674,13 +790,9 @@ export function SheetMusicViewer({
         </div>
       )}
 
-      {/* Sheet Music Canvas — soft warm paper tone in dark mode keeps black notation & colored feedback 100% crisp */}
+      {/* Sheet Music Canvas — dynamically fills all available browser width & height */}
       <div
-        className={`relative bg-white dark:bg-[#EAEFF4] border border-slate-200 dark:border-slate-700 rounded-xl p-4 md:p-6 overflow-y-auto shadow-xs transition-all text-slate-900 ${
-          showVirtualPiano
-            ? 'min-h-[290px] max-h-[420px]'
-            : 'flex-1 min-h-[460px] max-h-[calc(100vh-235px)]'
-        }`}
+        className="relative flex-1 min-h-[260px] bg-white dark:bg-[#EAEFF4] border border-slate-200 dark:border-slate-700 rounded-xl p-4 md:p-6 overflow-y-auto shadow-xs transition-colors text-slate-900"
       >
         {isLoading && (
           <div className="flex items-center justify-center py-16 text-sm text-slate-500">

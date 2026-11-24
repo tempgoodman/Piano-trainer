@@ -31,8 +31,8 @@ export function TopBar({ onOpenUpload }: TopBarProps) {
   const builtInScores = scores.filter((s) => !s.isCloudSaved);
 
   return (
-    <header className="w-full bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-2.5 transition-colors">
-      <div className="max-w-[1360px] mx-auto flex flex-wrap sm:flex-nowrap items-center justify-between gap-3 sm:gap-5">
+    <header className="w-full shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-2.5 transition-colors">
+      <div className="w-full flex flex-wrap sm:flex-nowrap items-center justify-between gap-3 sm:gap-5">
         {/* Zone 1: Upper-Left Brand Logo */}
         <Link
           to="/"

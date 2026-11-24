@@ -89,6 +89,13 @@ const en = {
   'controls.decreaseTempo': 'Decrease tempo',
   'controls.increaseTempo': 'Increase tempo',
   'controls.metronome': 'Metronome',
+  'controls.metronomeStyle': 'Sound Style',
+  'controls.metronomeStyleClassic': 'Classic',
+  'controls.metronomeStyleWoodblock': 'Woodblock',
+  'controls.metronomeStyleMechanical': 'Mechanical',
+  'controls.metronomeVolume': 'Metronome Volume',
+  'controls.muteMetronome': 'Mute metronome',
+  'controls.unmuteMetronome': 'Unmute metronome',
   'controls.abLoop': 'A/B Measure Loop',
   'controls.loopOn': 'Loop On',
   'controls.loopOff': 'Loop Off',
@@ -169,6 +176,8 @@ const en = {
   'stats.notesMatched': 'Notes Matched',
   'stats.practiceBar': 'Practice Bar {bar}',
   'stats.closeBarDetail': 'Close bar detail',
+  'stats.verifyRequired': 'Verify your email address to record and sync Practice Stats.',
+  'stats.verificationSent': 'Verification email sent — check your inbox.',
 
   // VirtualPiano & Collapsed Footer
   'piano.header': 'Piano Keyboard (C3 – C6)',
@@ -253,6 +262,7 @@ const en = {
   'upload.chooseFile': 'Choose File',
   'upload.savingCloud': 'Saving sheet music to your private cloud library…',
   'upload.loadSample': 'Load Sample Transcribed Etude',
+  'upload.retry': 'Retry Upload',
 
   // PracticeTutorModal
   'tutor.title': 'Practice Tutor',
@@ -391,6 +401,13 @@ const zhTW: Record<TranslationKey, string> = {
   'controls.decreaseTempo': '降低速度',
   'controls.increaseTempo': '提高速度',
   'controls.metronome': '節拍器',
+  'controls.metronomeStyle': '音效風格',
+  'controls.metronomeStyleClassic': '經典電子',
+  'controls.metronomeStyleWoodblock': '木魚木塊',
+  'controls.metronomeStyleMechanical': '機械節拍',
+  'controls.metronomeVolume': '節拍器音量',
+  'controls.muteMetronome': '靜音節拍器',
+  'controls.unmuteMetronome': '取消靜音節拍器',
   'controls.abLoop': 'A/B 小節循環',
   'controls.loopOn': '循環開',
   'controls.loopOff': '循環關',
@@ -471,6 +488,8 @@ const zhTW: Record<TranslationKey, string> = {
   'stats.notesMatched': '正確音符',
   'stats.practiceBar': '循環練習第 {bar} 小節',
   'stats.closeBarDetail': '關閉小節明細',
+  'stats.verifyRequired': '請先驗證您的電子郵件，系統才會儲存並同步練習統計。',
+  'stats.verificationSent': '已寄出驗證信，請檢查您的收件匣。',
 
   // VirtualPiano & Collapsed Footer
   'piano.header': '鋼琴鍵盤 (C3 – C6)',
@@ -555,6 +574,7 @@ const zhTW: Record<TranslationKey, string> = {
   'upload.chooseFile': '選擇檔案',
   'upload.savingCloud': '正在將樂譜儲存至您的私人雲端曲庫…',
   'upload.loadSample': '載入範例辨識練習曲',
+  'upload.retry': '重試上傳',
 
   // PracticeTutorModal
   'tutor.title': '練習導師',
@@ -691,6 +711,13 @@ const zhCN: Record<TranslationKey, string> = {
   'controls.decreaseTempo': '降低速度',
   'controls.increaseTempo': '提高速度',
   'controls.metronome': '节拍器',
+  'controls.metronomeStyle': '音效风格',
+  'controls.metronomeStyleClassic': '经典电子',
+  'controls.metronomeStyleWoodblock': '木鱼木块',
+  'controls.metronomeStyleMechanical': '机械节拍',
+  'controls.metronomeVolume': '节拍器音量',
+  'controls.muteMetronome': '静音节拍器',
+  'controls.unmuteMetronome': '取消静音节拍器',
   'controls.abLoop': 'A/B 小节循环',
   'controls.loopOn': '循环开',
   'controls.loopOff': '循环关',
@@ -771,6 +798,8 @@ const zhCN: Record<TranslationKey, string> = {
   'stats.notesMatched': '正确音符',
   'stats.practiceBar': '循环练习第 {bar} 小节',
   'stats.closeBarDetail': '关闭小节明细',
+  'stats.verifyRequired': '请先验证您的电子邮箱，系统才会保存并同步练习统计。',
+  'stats.verificationSent': '已发送验证邮件，请检查您的收件箱。',
 
   // VirtualPiano & Collapsed Footer
   'piano.header': '钢琴键盘 (C3 – C6)',
@@ -855,6 +884,7 @@ const zhCN: Record<TranslationKey, string> = {
   'upload.chooseFile': '选择文件',
   'upload.savingCloud': '正在将乐谱保存至您的私人云端曲库…',
   'upload.loadSample': '加载示例识别练习曲',
+  'upload.retry': '重试上传',
 
   // PracticeTutorModal
   'tutor.title': '练习导师',

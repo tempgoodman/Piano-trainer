@@ -290,13 +290,17 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
     const state = usePracticeStore.getState();
     let { expected, rawNotes } = extractExpectedNotes(osmd, state.handMode);
     let safety = 0;
+    let passedBoundary = false;
+    let reachedEnd = false;
 
     while (expected.length === 0 && !osmd.cursor.Iterator.EndReached && safety < 128) {
       osmd.cursor.next();
       const nextMeasure = getCursorMeasureNumber(osmd);
       if (state.loopRange.enabled && (osmd.cursor.Iterator.EndReached || nextMeasure > state.loopRange.endMeasure)) {
-        jumpCursorToMeasure(osmd, state.loopRange.startMeasure);
+        passedBoundary = true;
+        break;
       } else if (osmd.cursor.Iterator.EndReached) {
+        reachedEnd = true;
         break;
       }
       const extracted = extractExpectedNotes(osmd, state.handMode);
@@ -305,7 +309,7 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
       safety++;
     }
 
-    return { expected, rawNotes };
+    return { expected, rawNotes, passedBoundary, reachedEnd };
   }, []);
 
   /**
@@ -385,7 +389,39 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
     const shouldSkipRests = state.practiceMode === 'wait' || usePracticeStore.getState().isArmed;
     let extracted = extractExpectedNotes(osmd, state.handMode);
     if (shouldSkipRests && extracted.expected.length === 0) {
-      extracted = skipRestsAtCursor(osmd);
+      const skipped = skipRestsAtCursor(osmd);
+      if (skipped.passedBoundary || skipped.reachedEnd) {
+        // Trailing rests crossed Point B or Song End — flush touched bars and reset/complete cleanly
+        if (!state.isStatsMode && state.playbackMode === 'none') {
+          const allTouchedMeasures = Object.keys(barSessionRef.current).map(Number);
+          if (allTouchedMeasures.length > 0) {
+            flushBarsToCloud(allTouchedMeasures, state.practiceMode, state.bpm, true);
+          }
+        }
+        const targetStart = state.loopRange.enabled ? state.loopRange.startMeasure : 1;
+        pendingGraceBeatsRef.current = [];
+        completedTempoMeasuresRef.current.clear();
+        jumpCursorToMeasure(osmd, targetStart);
+
+        if (state.practiceMode === 'tempo') {
+          state.completeRunAndArm();
+          resetAllOSMDNoteColors(osmd);
+        } else {
+          if (skipped.reachedEnd && !state.loopRange.enabled) {
+            state.completeRunAndArm();
+            audioEngine.playFeedbackCue('success');
+          }
+          resetAllOSMDNoteColors(osmd);
+        }
+
+        extracted = extractExpectedNotes(osmd, state.handMode);
+        if (extracted.expected.length === 0) {
+          const retry = skipRestsAtCursor(osmd);
+          extracted = { expected: retry.expected, rawNotes: retry.rawNotes };
+        }
+      } else {
+        extracted = { expected: skipped.expected, rawNotes: skipped.rawNotes };
+      }
     }
 
     currentBeatRawNotesRef.current = extracted.rawNotes;
@@ -407,6 +443,35 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
     syncCursorTargets();
   }, [osmdRef, syncCursorTargets]);
 
+  const flushPendingCompletedTempoBars = useCallback(
+    (tempoBpm: number) => {
+      if (completedTempoMeasuresRef.current.size === 0) return;
+      const completed = Array.from(completedTempoMeasuresRef.current);
+      // Resolve any remaining grace beats belonging to already-completed bars before flushing
+      for (const beat of pendingGraceBeatsRef.current) {
+        if (!completedTempoMeasuresRef.current.has(beat.measureNumber)) continue;
+        const missedNotes = beat.notes.filter((n) => !beat.matchedMidis.has(n.halfTone + 12));
+        for (let i = 0; i < missedNotes.length; i++) {
+          recordBarEvent(beat.measureNumber, 'miss');
+        }
+      }
+      pendingGraceBeatsRef.current = pendingGraceBeatsRef.current.filter(
+        (b) => !completedTempoMeasuresRef.current.has(b.measureNumber)
+      );
+      flushBarsToCloud(completed, 'tempo', tempoBpm, false);
+    },
+    [flushBarsToCloud, recordBarEvent]
+  );
+
+  // Flush completed Tempo bars immediately if user pauses Tempo playback or enters Stats Mode
+  useEffect(() => {
+    if (isStatsMode || !isPlaying) {
+      if (completedTempoMeasuresRef.current.size > 0) {
+        flushPendingCompletedTempoBars(bpm);
+      }
+    }
+  }, [bpm, flushPendingCompletedTempoBars, isPlaying, isStatsMode]);
+
   /**
    * Resets cursor to Measure 1 (or Point A if looping), clears all note colors,
    * and enters the Armed state (in Tempo Mode) or ready state (in Wait Mode).
@@ -414,6 +479,9 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
   const resetToStart = useCallback(() => {
     const osmd = osmdRef.current;
     const state = usePracticeStore.getState();
+
+    // Preserve any Tempo bars that were already completed before resetting
+    flushPendingCompletedTempoBars(state.bpm);
 
     pendingGraceBeatsRef.current = [];
     barSessionRef.current = {};
@@ -443,16 +511,14 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
         syncCursorTargets();
       }
     }
-  }, [osmdRef, syncCursorTargets]);
+  }, [flushPendingCompletedTempoBars, osmdRef, syncCursorTargets]);
 
   /**
    * Hotkey 2 ("Rest / Stop"): Stops active Tempo playback and switches to Wait Mode.
    */
   const stopToWaitMode = useCallback(() => {
     const state = usePracticeStore.getState();
-    if (completedTempoMeasuresRef.current.size > 0) {
-      flushBarsToCloud(Array.from(completedTempoMeasuresRef.current), 'tempo', state.bpm, false);
-    }
+    flushPendingCompletedTempoBars(state.bpm);
     pendingGraceBeatsRef.current = [];
     barSessionRef.current = {};
     completedTempoMeasuresRef.current.clear();
@@ -461,7 +527,7 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
     if (osmdRef.current) {
       syncCursorTargets();
     }
-  }, [flushBarsToCloud, osmdRef, syncCursorTargets]);
+  }, [flushPendingCompletedTempoBars, osmdRef, syncCursorTargets]);
 
   // Snap cursor into A/B loop window whenever loop range is clicked/adjusted
   useEffect(() => {

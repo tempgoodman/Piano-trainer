@@ -62,9 +62,12 @@ export function makePracticeStatId(
   }
 
   const hash = fnv1aHex(`${safeUid}:${safeScore}`);
-  const maxUidLen = Math.min(safeUid.length, 40);
-  const maxScoreLen = Math.max(8, 128 - maxUidLen - suffix.length - hash.length - 2);
-  return `${safeUid.slice(0, maxUidLen)}_${safeScore.slice(0, maxScoreLen)}_${hash}${suffix}`;
+  const prefix = `${safeUid}_`;
+  const remainingForScore = 128 - prefix.length - suffix.length - hash.length - 1;
+  if (remainingForScore >= 4) {
+    return `${prefix}${safeScore.slice(0, remainingForScore)}_${hash}${suffix}`;
+  }
+  return `${prefix}${hash}${suffix}`.slice(0, 128);
 }
 
 export function sanitizeScoreIdForFirestore(scoreId: string): string {

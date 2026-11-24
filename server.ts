@@ -144,10 +144,85 @@ function extractXmlFromModelText(raw: string): string | null {
   return cleaned.slice(startIdx, endIdx);
 }
 
+function extractGeminiErrorDetails(err: unknown): { code?: number; status?: string; message: string } {
+  const raw = err instanceof Error ? err.message : String(err ?? 'Optical Music Recognition failed.');
+  const trimmed = raw.trim();
+
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed) as {
+        error?: { code?: number; status?: string; message?: string };
+        code?: number;
+        status?: string;
+        message?: string;
+      };
+      const inner = parsed.error ?? parsed;
+      return {
+        code: typeof inner.code === 'number' ? inner.code : undefined,
+        status: typeof inner.status === 'string' ? inner.status : undefined,
+        message: typeof inner.message === 'string' ? inner.message : raw,
+      };
+    } catch {
+      // Fall through to raw string inspection
+    }
+  }
+
+  const statusFromObj =
+    typeof err === 'object' && err !== null && 'status' in err
+      ? Number((err as { status?: unknown }).status)
+      : undefined;
+
+  return {
+    code: Number.isFinite(statusFromObj) ? statusFromObj : undefined,
+    message: raw,
+  };
+}
+
+function isTransientGeminiError(err: unknown): boolean {
+  const details = extractGeminiErrorDetails(err);
+  const haystack = `${details.status ?? ''} ${details.message}`.toLowerCase();
+  return (
+    details.code === 503 ||
+    details.code === 429 ||
+    details.code === 500 ||
+    details.code === 504 ||
+    haystack.includes('unavailable') ||
+    haystack.includes('high demand') ||
+    haystack.includes('overloaded') ||
+    haystack.includes('resource_exhausted') ||
+    haystack.includes('temporarily') ||
+    haystack.includes('timeout') ||
+    haystack.includes('econnreset') ||
+    haystack.includes('fetch failed')
+  );
+}
+
+function formatFriendlyGeminiError(err: unknown): string {
+  const details = extractGeminiErrorDetails(err);
+  const haystack = `${details.status ?? ''} ${details.message}`.toLowerCase();
+
+  if (details.code === 503 || haystack.includes('unavailable') || haystack.includes('high demand')) {
+    return 'The AI sheet-reading service is temporarily experiencing high demand (503). Please click Retry in a few seconds, or upload a .musicxml / .xml file directly.';
+  }
+  if (details.code === 429 || haystack.includes('resource_exhausted') || haystack.includes('quota')) {
+    return 'AI request quota reached (429). Please wait a moment before retrying, or upload a .musicxml / .xml file directly.';
+  }
+  if (
+    details.code === 403 ||
+    haystack.includes('permission_denied') ||
+    haystack.includes('api_key_invalid')
+  ) {
+    return 'AI service authorization failed. Please check the API key in Settings > Secrets.';
+  }
+
+  return details.message || 'Optical Music Recognition failed.';
+}
+
 async function transcribeWithGemini(
   base64Data: string,
   mimeType: string,
-  filename: string
+  filename: string,
+  onStatus?: (progress: number, message: string) => void
 ): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -176,30 +251,74 @@ async function transcribeWithGemini(
     '5. Include accurate <divisions>, <key><fifths>, and <time><beats>/<beat-type>.',
   ].join('\n');
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
-    contents: {
-      parts: [
-        {
-          inlineData: {
-            mimeType,
-            data: base64Data,
-          },
+  const contents = {
+    parts: [
+      {
+        inlineData: {
+          mimeType,
+          data: base64Data,
         },
-        { text: prompt },
-      ],
-    },
-    config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
-    },
-  });
+      },
+      { text: prompt },
+    ],
+  };
 
-  const text = response.text ?? '';
-  const xml = extractXmlFromModelText(text);
-  if (!xml) {
-    throw new Error('Could not extract valid MusicXML from the uploaded sheet image.');
+  const modelPlan: {
+    model: string;
+    attempts: number;
+    useThinkingMedium: boolean;
+    label: string;
+  }[] = [
+    { model: 'gemini-4-hydrogen', attempts: 3, useThinkingMedium: true, label: 'primary' },
+    { model: 'gemini-3.1-flash-lite', attempts: 2, useThinkingMedium: false, label: 'backup' },
+  ];
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  let lastError: unknown = null;
+
+  for (let planIdx = 0; planIdx < modelPlan.length; planIdx++) {
+    const plan = modelPlan[planIdx];
+    if (planIdx > 0) {
+      onStatus?.(68, 'Primary AI model busy — switching to backup model…');
+    }
+
+    for (let attempt = 1; attempt <= plan.attempts; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model: plan.model,
+          contents,
+          ...(plan.useThinkingMedium
+            ? { config: { thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } } }
+            : {}),
+        });
+
+        const text = response.text ?? '';
+        const xml = extractXmlFromModelText(text);
+        if (xml) {
+          return xml;
+        }
+        lastError = new Error('Could not extract valid MusicXML from the uploaded sheet image.');
+      } catch (err) {
+        lastError = err;
+        const transient = isTransientGeminiError(err);
+
+        if (!transient) {
+          throw err;
+        }
+
+        if (attempt < plan.attempts) {
+          const delayMs = Math.min(6000, 1500 * Math.pow(2, attempt - 1));
+          onStatus?.(
+            Math.min(78, 60 + attempt * 6),
+            `AI model experiencing high demand — retrying (${attempt + 1}/${plan.attempts})…`
+          );
+          await sleep(delayMs);
+        }
+      }
+    }
   }
-  return xml;
+
+  throw lastError ?? new Error('Optical Music Recognition failed.');
 }
 
 async function runAsyncOmrJob(
@@ -232,7 +351,10 @@ async function runAsyncOmrJob(
       const xml = await transcribeWithGemini(
         imagePayload.base64Data,
         imagePayload.mimeType,
-        current?.filename || 'Uploaded Score'
+        current?.filename || 'Uploaded Score',
+        (progress, message) => {
+          updateJob({ status: 'recognizing', progress, message });
+        }
       );
       updateJob({
         status: 'postprocessing',
@@ -248,7 +370,7 @@ async function runAsyncOmrJob(
       });
       return;
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Optical Music Recognition failed.';
+      const message = formatFriendlyGeminiError(err);
       updateJob({
         status: 'error',
         progress: 100,

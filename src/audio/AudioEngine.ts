@@ -13,15 +13,21 @@ const SAMPLED_PIANO_NOTES = [
   86, 89, 93, 96, 103,
 ];
 
+export type MetronomeStyle = 'classic' | 'woodblock' | 'mechanical';
+
 export interface PianoLoadCallbacks {
   onProgress?: (progressPercent: number, engineLabel: string) => void;
 }
 
+const METRONOME_MAX_GAIN = 2.2;
+
 class PianoAudioEngine {
   private ctx: AudioContext | null = null;
   private metronomeGain: GainNode | null = null;
+  private feedbackGain: GainNode | null = null;
   private pianoBus: GainNode | null = null;
   private compressor: DynamicsCompressorNode | null = null;
+  private clickNoiseBuffer: AudioBuffer | null = null;
 
   private instrument: Smplr | null = null;
   private engineLabel = 'Splendid Grand Piano';
@@ -41,6 +47,8 @@ class PianoAudioEngine {
   private currentBeat = 0;
   private bpm = 84;
   private beatsPerMeasure = 4;
+  private metronomeVolume = 0.85;
+  private metronomeStyle: MetronomeStyle = 'classic';
   private isMetronomeRunning = false;
   private onBeatCallback: ((beatInMeasure: number) => void) | null = null;
 
@@ -64,8 +72,12 @@ class PianoAudioEngine {
       this.pianoBus.gain.value = 1.0;
       this.pianoBus.connect(this.compressor);
 
+      this.feedbackGain = this.ctx.createGain();
+      this.feedbackGain.gain.value = 0.5;
+      this.feedbackGain.connect(this.compressor);
+
       this.metronomeGain = this.ctx.createGain();
-      this.metronomeGain.gain.value = 0.45;
+      this.metronomeGain.gain.value = this.metronomeVolume * METRONOME_MAX_GAIN;
       this.metronomeGain.connect(this.compressor);
     }
     return this.ctx;
@@ -319,7 +331,7 @@ class PianoAudioEngine {
     if (ctx.state === 'suspended') {
       void ctx.resume();
     }
-    if (!this.metronomeGain) return;
+    if (!this.feedbackGain) return;
 
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
@@ -329,10 +341,10 @@ class PianoAudioEngine {
     if (kind === 'success') {
       osc.frequency.setValueAtTime(1174.66, now + 0.08);
     }
-    gain.gain.setValueAtTime(0.08, now);
+    gain.gain.setValueAtTime(0.14, now);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
     osc.connect(gain);
-    gain.connect(this.metronomeGain);
+    gain.connect(this.feedbackGain);
     osc.start(now);
     osc.stop(now + 0.18);
   }
@@ -344,10 +356,52 @@ class PianoAudioEngine {
     this.beatsPerMeasure = Math.max(2, Math.min(12, beatsPerMeasure));
   }
 
+  public setMetronomeVolume(volume: number): void {
+    const clamped = Math.max(0, Math.min(1, Number.isFinite(volume) ? volume : 0.85));
+    this.metronomeVolume = clamped;
+    if (this.ctx && this.metronomeGain) {
+      this.metronomeGain.gain.setTargetAtTime(
+        clamped * METRONOME_MAX_GAIN,
+        this.ctx.currentTime,
+        0.015
+      );
+    }
+  }
+
+  public setMetronomeStyle(style: MetronomeStyle): void {
+    this.metronomeStyle = style;
+  }
+
+  public previewMetronomeClick(isDownbeat = true): void {
+    if (this.metronomeVolume <= 0) return;
+    const ctx = this.ensureContext();
+    const trigger = () => {
+      if (this.metronomeGain) {
+        this.metronomeGain.gain.setValueAtTime(
+          this.metronomeVolume * METRONOME_MAX_GAIN,
+          ctx.currentTime
+        );
+      }
+      this.scheduleClick(ctx.currentTime + 0.015, isDownbeat);
+    };
+
+    if (ctx.state === 'suspended') {
+      void ctx.resume().then(trigger);
+    } else {
+      trigger();
+    }
+  }
+
   public startMetronome(onBeat?: (beatInMeasure: number) => void): void {
     const ctx = this.ensureContext();
     if (ctx.state === 'suspended') {
       void ctx.resume();
+    }
+    if (this.metronomeGain) {
+      this.metronomeGain.gain.setValueAtTime(
+        this.metronomeVolume * METRONOME_MAX_GAIN,
+        ctx.currentTime
+      );
     }
     this.onBeatCallback = onBeat ?? null;
 
@@ -394,23 +448,198 @@ class PianoAudioEngine {
     this.onBeatCallback = null;
   }
 
+  private getClickNoiseBuffer(ctx: AudioContext): AudioBuffer {
+    if (this.clickNoiseBuffer && this.clickNoiseBuffer.sampleRate === ctx.sampleRate) {
+      return this.clickNoiseBuffer;
+    }
+    const length = Math.max(1, Math.floor(ctx.sampleRate * 0.03));
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < length; i++) {
+      // Exponentially decaying white noise burst for crisp percussive stick/pendulum attack
+      const env = Math.exp((-6 * i) / length);
+      data[i] = (Math.random() * 2 - 1) * env;
+    }
+    this.clickNoiseBuffer = buffer;
+    return buffer;
+  }
+
   private scheduleClick(time: number, isDownbeat: boolean): void {
-    if (!this.ctx || !this.metronomeGain) return;
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
+    if (!this.ctx || !this.metronomeGain || this.metronomeVolume <= 0) return;
 
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(isDownbeat ? 1320 : 880, time);
-    osc.frequency.exponentialRampToValueAtTime(isDownbeat ? 660 : 440, time + 0.035);
+    if (this.metronomeStyle === 'woodblock') {
+      this.scheduleWoodblockClick(this.ctx, this.metronomeGain, time, isDownbeat);
+      return;
+    }
 
-    gain.gain.setValueAtTime(isDownbeat ? 0.35 : 0.2, time);
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.045);
+    if (this.metronomeStyle === 'mechanical') {
+      this.scheduleMechanicalClick(this.ctx, this.metronomeGain, time, isDownbeat);
+      return;
+    }
+
+    this.scheduleClassicClick(this.ctx, this.metronomeGain, time, isDownbeat);
+  }
+
+  private scheduleClassicClick(
+    ctx: AudioContext,
+    dest: AudioNode,
+    time: number,
+    isDownbeat: boolean
+  ): void {
+    // Punchy digital beep with bright harmonic overtone so it cuts cleanly through grand piano chords
+    const osc = ctx.createOscillator();
+    const overtone = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const overtoneGain = ctx.createGain();
+
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(isDownbeat ? 1568 : 1046.5, time);
+    osc.frequency.exponentialRampToValueAtTime(isDownbeat ? 1175 : 784, time + 0.045);
+
+    overtone.type = 'sine';
+    overtone.frequency.setValueAtTime(isDownbeat ? 3136 : 2093, time);
+
+    const peak = isDownbeat ? 0.92 : 0.65;
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.linearRampToValueAtTime(peak, time + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.058);
+
+    overtoneGain.gain.setValueAtTime(0.0001, time);
+    overtoneGain.gain.linearRampToValueAtTime(peak * 0.25, time + 0.0015);
+    overtoneGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.024);
 
     osc.connect(gain);
-    gain.connect(this.metronomeGain);
+    overtone.connect(overtoneGain);
+    gain.connect(dest);
+    overtoneGain.connect(dest);
 
     osc.start(time);
-    osc.stop(time + 0.05);
+    overtone.start(time);
+    osc.stop(time + 0.065);
+    overtone.stop(time + 0.03);
+  }
+
+  private scheduleWoodblockClick(
+    ctx: AudioContext,
+    dest: AudioNode,
+    time: number,
+    isDownbeat: boolean
+  ): void {
+    // Resonant hollow woodblock: dual tuned cavity partials + bandpass-filtered wooden mallet attack
+    const bodyOsc = ctx.createOscillator();
+    const cavityOsc = ctx.createOscillator();
+    const bodyGain = ctx.createGain();
+    const cavityGain = ctx.createGain();
+
+    const baseFreq = isDownbeat ? 1020 : 760;
+    bodyOsc.type = 'sine';
+    bodyOsc.frequency.setValueAtTime(baseFreq * 1.06, time);
+    bodyOsc.frequency.exponentialRampToValueAtTime(baseFreq, time + 0.014);
+
+    cavityOsc.type = 'triangle';
+    cavityOsc.frequency.setValueAtTime(baseFreq * 1.54, time);
+    cavityOsc.frequency.exponentialRampToValueAtTime(baseFreq * 1.48, time + 0.018);
+
+    const peak = isDownbeat ? 0.98 : 0.72;
+    bodyGain.gain.setValueAtTime(0.0001, time);
+    bodyGain.gain.linearRampToValueAtTime(peak, time + 0.0015);
+    bodyGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.052);
+
+    cavityGain.gain.setValueAtTime(0.0001, time);
+    cavityGain.gain.linearRampToValueAtTime(peak * 0.42, time + 0.001);
+    cavityGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.028);
+
+    bodyOsc.connect(bodyGain);
+    cavityOsc.connect(cavityGain);
+    bodyGain.connect(dest);
+    cavityGain.connect(dest);
+
+    // Filtered stick-strike noise transient
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.getClickNoiseBuffer(ctx);
+    const bandpass = ctx.createBiquadFilter();
+    bandpass.type = 'bandpass';
+    bandpass.frequency.setValueAtTime(isDownbeat ? 2600 : 1900, time);
+    bandpass.Q.setValueAtTime(2.6, time);
+
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(isDownbeat ? 0.75 : 0.55, time);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.016);
+
+    noise.connect(bandpass);
+    bandpass.connect(noiseGain);
+    noiseGain.connect(dest);
+
+    bodyOsc.start(time);
+    cavityOsc.start(time);
+    noise.start(time);
+
+    bodyOsc.stop(time + 0.06);
+    cavityOsc.stop(time + 0.035);
+    noise.stop(time + 0.02);
+  }
+
+  private scheduleMechanicalClick(
+    ctx: AudioContext,
+    dest: AudioNode,
+    time: number,
+    isDownbeat: boolean
+  ): void {
+    // Classic pyramid metronome pendulum tick with crisp metallic accent on beat 1
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.getClickNoiseBuffer(ctx);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(isDownbeat ? 3400 : 2350, time);
+    filter.Q.setValueAtTime(3.2, time);
+
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(isDownbeat ? 1.15 : 0.85, time);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.022);
+
+    noise.connect(filter);
+    filter.connect(noiseGain);
+    noiseGain.connect(dest);
+    noise.start(time);
+    noise.stop(time + 0.026);
+
+    // Short wooden housing knock + downbeat bell ping
+    const knockOsc = ctx.createOscillator();
+    const knockGain = ctx.createGain();
+    knockOsc.type = 'square';
+    knockOsc.frequency.setValueAtTime(isDownbeat ? 2150 : 1450, time);
+    knockOsc.frequency.exponentialRampToValueAtTime(isDownbeat ? 900 : 620, time + 0.012);
+
+    const knockFilter = ctx.createBiquadFilter();
+    knockFilter.type = 'bandpass';
+    knockFilter.frequency.setValueAtTime(isDownbeat ? 2400 : 1600, time);
+    knockFilter.Q.setValueAtTime(2.0, time);
+
+    knockGain.gain.setValueAtTime(0.0001, time);
+    knockGain.gain.linearRampToValueAtTime(isDownbeat ? 0.65 : 0.48, time + 0.001);
+    knockGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.018);
+
+    knockOsc.connect(knockFilter);
+    knockFilter.connect(knockGain);
+    knockGain.connect(dest);
+    knockOsc.start(time);
+    knockOsc.stop(time + 0.022);
+
+    if (isDownbeat) {
+      // Subtle classic Wittner metronome bell ping on beat 1
+      const bell = ctx.createOscillator();
+      const bellGain = ctx.createGain();
+      bell.type = 'sine';
+      bell.frequency.setValueAtTime(2637, time);
+      bellGain.gain.setValueAtTime(0.0001, time);
+      bellGain.gain.linearRampToValueAtTime(0.32, time + 0.002);
+      bellGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.095);
+      bell.connect(bellGain);
+      bellGain.connect(dest);
+      bell.start(time);
+      bell.stop(time + 0.1);
+    }
   }
 }
 

@@ -288,14 +288,23 @@ function evaluatePracticeStatRule(
   if (!auth) return 'PERMISSION_DENIED';
   const isVerified = auth.emailVerified === true;
 
+  const isOwnedStatDocId =
+    statId.length > auth.uid.length + 1 && statId.startsWith(`${auth.uid}_`);
+
   if (op === 'get') {
-    return isValidId(statId) && existing?.ownerId === auth.uid ? 'ALLOW' : 'PERMISSION_DENIED';
+    if (!isValidId(statId)) return 'PERMISSION_DENIED';
+    if (!existing) {
+      return isOwnedStatDocId ? 'ALLOW' : 'PERMISSION_DENIED';
+    }
+    return existing.ownerId === auth.uid ? 'ALLOW' : 'PERMISSION_DENIED';
   }
   if (op === 'list') {
     return existing?.ownerId === auth.uid ? 'ALLOW' : 'PERMISSION_DENIED';
   }
   if (op === 'create') {
-    if (!isVerified || !isValidId(statId) || !incoming) return 'PERMISSION_DENIED';
+    if (!isVerified || !isValidId(statId) || !isOwnedStatDocId || !incoming) {
+      return 'PERMISSION_DENIED';
+    }
     return isValidPracticeStat(incoming, statId, auth) &&
       incoming.createdAt === REQUEST_TIME &&
       incoming.updatedAt === REQUEST_TIME
@@ -498,6 +507,10 @@ function runSuite() {
 
   // Positive control checks: /practiceStats
   assert.equal(
+    evaluatePracticeStatRule('get', aliceAuth, 'alice_uid_ode-to-joy_tempo_80', undefined),
+    'ALLOW'
+  );
+  assert.equal(
     evaluatePracticeStatRule('create', aliceAuth, 'alice_uid_ode-to-joy_tempo_80', undefined, validAliceStat),
     'ALLOW'
   );
@@ -527,6 +540,11 @@ function runSuite() {
     evaluatePracticeStatRule('get', bobAuth, 'alice_uid_ode-to-joy_tempo_80', validAliceStat),
     'PERMISSION_DENIED',
     '#16a'
+  );
+  assert.equal(
+    evaluatePracticeStatRule('get', bobAuth, 'alice_uid_ode-to-joy_tempo_80', undefined),
+    'PERMISSION_DENIED',
+    '#16c'
   );
   assert.equal(
     evaluatePracticeStatRule('list', bobAuth, '', validAliceStat),

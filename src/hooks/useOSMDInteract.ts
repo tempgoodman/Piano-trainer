@@ -17,6 +17,11 @@ interface UseOSMDInteractOptions {
   isReady: boolean;
 }
 
+function hasBarActivity(bar: BarPracticeStats | undefined): boolean {
+  if (!bar) return false;
+  return bar.practices > 0 || bar.perfect + bar.good + bar.wrong + bar.miss > 0;
+}
+
 function getBarColors(bar: BarPracticeStats | undefined, isSelected: boolean) {
   if (isSelected) {
     return {
@@ -25,14 +30,14 @@ function getBarColors(bar: BarPracticeStats | undefined, isSelected: boolean) {
       strokeWidth: '2',
     };
   }
-  if (!bar || bar.practices <= 0) {
+  if (!hasBarActivity(bar)) {
     return {
       fill: 'rgba(148, 163, 184, 0.05)',
       stroke: 'rgba(148, 163, 184, 0.28)',
       strokeWidth: '1',
     };
   }
-  const acc = getBarAccuracyPercent(bar);
+  const acc = getBarAccuracyPercent(bar!);
   if (acc === null || acc >= 90) {
     return {
       fill: 'rgba(16, 185, 129, 0.12)',
@@ -229,11 +234,86 @@ export function useOSMDInteract({ osmdRef, containerRef, isReady }: UseOSMDInter
 
         overlayGroup.appendChild(hitRect);
 
-        // Render compact, high-contrast per-bar stats badge along the top edge of the measure
+        // Render compact, accurately measured per-bar stats badge along the top edge of the measure
         const badgeHeight = 16;
-        const badgeY = Math.max(1, rectY - 4);
-        const badgeX = rectX + 4;
-        const maxBadgeW = Math.max(28, rectW - 8);
+        const badgeY = Math.max(1, rectY - 5);
+        const badgeX = rectX + 3;
+        const maxBadgeW = Math.max(26, rectW - 6);
+
+        type BadgeSegment = { text: string; fill: string };
+        const candidates: BadgeSegment[][] = [];
+
+        if (!hasBarActivity(barStats)) {
+          candidates.push([
+            { text: `M${measureNumber} · 0×`, fill: '#64748B' },
+          ]);
+          candidates.push([
+            { text: `M${measureNumber}`, fill: '#64748B' },
+          ]);
+        } else if (filterMode === 'wait') {
+          const stats = barStats!;
+          if (stats.wrong > 0) {
+            candidates.push([
+              { text: `M${measureNumber} · `, fill: '#475569' },
+              { text: `${stats.practices}×`, fill: '#047857' },
+              { text: ` ${stats.wrong}W`, fill: '#DC2626' },
+            ]);
+            candidates.push([
+              { text: `${stats.practices}×`, fill: '#047857' },
+              { text: ` ${stats.wrong}W`, fill: '#DC2626' },
+            ]);
+          }
+          candidates.push([
+            { text: `M${measureNumber} · `, fill: '#475569' },
+            { text: `${stats.practices}×`, fill: '#047857' },
+          ]);
+          candidates.push([
+            { text: `${stats.practices}×`, fill: '#047857' },
+          ]);
+        } else {
+          const stats = barStats!;
+          const acc = getBarAccuracyPercent(stats);
+          const accColor =
+            acc === null || acc >= 90 ? '#047857' : acc >= 70 ? '#0369A1' : '#B45309';
+
+          if (stats.miss > 0) {
+            candidates.push([
+              { text: `M${measureNumber} `, fill: '#475569' },
+              { text: `${stats.practices}×`, fill: '#0F172A' },
+              { text: ` ${stats.perfect}P`, fill: '#047857' },
+              { text: ` ${stats.good}G`, fill: '#B45309' },
+              { text: ` ${stats.wrong}W`, fill: '#DC2626' },
+              { text: ` ${stats.miss}M`, fill: '#64748B' },
+            ]);
+          }
+          candidates.push([
+            { text: `M${measureNumber} `, fill: '#475569' },
+            { text: `${stats.practices}×`, fill: '#0F172A' },
+            { text: ` ${stats.perfect}P`, fill: '#047857' },
+            { text: ` ${stats.good}G`, fill: '#B45309' },
+            { text: ` ${stats.wrong}W`, fill: '#DC2626' },
+          ]);
+          candidates.push([
+            { text: `${stats.practices}×`, fill: '#0F172A' },
+            { text: ` ${stats.perfect}P`, fill: '#047857' },
+            { text: ` ${stats.good}G`, fill: '#B45309' },
+            { text: ` ${stats.wrong}W`, fill: '#DC2626' },
+          ]);
+          if (acc !== null) {
+            candidates.push([
+              { text: `M${measureNumber} · `, fill: '#475569' },
+              { text: `${stats.practices}×`, fill: '#0F172A' },
+              { text: ` ${acc}%`, fill: accColor },
+            ]);
+            candidates.push([
+              { text: `${stats.practices}×`, fill: '#0F172A' },
+              { text: ` ${acc}%`, fill: accColor },
+            ]);
+          }
+          candidates.push([
+            { text: `${stats.practices}×`, fill: '#0F172A' },
+          ]);
+        }
 
         const labelText = document.createElementNS(SVG_NS, 'text');
         labelText.setAttribute('x', String(badgeX + 5));
@@ -242,74 +322,46 @@ export function useOSMDInteract({ osmdRef, containerRef, isReady }: UseOSMDInter
         labelText.setAttribute('font-weight', '700');
         labelText.setAttribute('font-family', 'IBM Plex Mono, monospace');
 
-        const addSpan = (content: string, fill: string) => {
-          const tspan = document.createElementNS(SVG_NS, 'tspan');
-          tspan.setAttribute('fill', fill);
-          tspan.textContent = content;
-          labelText.appendChild(tspan);
+        const populateText = (segments: BadgeSegment[]) => {
+          labelText.textContent = '';
+          for (const seg of segments) {
+            const tspan = document.createElementNS(SVG_NS, 'tspan');
+            tspan.setAttribute('fill', seg.fill);
+            tspan.textContent = seg.text;
+            labelText.appendChild(tspan);
+          }
         };
 
-        let estimatedChars = 0;
-        if (!barStats || barStats.practices <= 0) {
-          addSpan(`M${measureNumber} · 0×`, '#64748B');
-          estimatedChars = `M${measureNumber} · 0×`.length;
-        } else if (filterMode === 'wait') {
-          const countStr = `${barStats.practices}×`;
-          addSpan(countStr, '#047857');
-          estimatedChars += countStr.length;
-          if (barStats.wrong > 0 && rectW >= 85) {
-            const wrongStr = ` ${barStats.wrong}W`;
-            addSpan(wrongStr, '#DC2626');
-            estimatedChars += wrongStr.length;
-          }
-        } else {
-          const countStr = `${barStats.practices}×`;
-          addSpan(countStr, '#0F172A');
-          estimatedChars += countStr.length;
-
-          if (rectW >= 115) {
-            const pStr = ` ${barStats.perfect}P`;
-            const gStr = ` ${barStats.good}G`;
-            const wStr = ` ${barStats.wrong}W`;
-            addSpan(pStr, '#047857');
-            addSpan(gStr, '#B45309');
-            addSpan(wStr, '#DC2626');
-            estimatedChars += pStr.length + gStr.length + wStr.length;
-            if (barStats.miss > 0 && rectW >= 155) {
-              const mStr = ` ${barStats.miss}M`;
-              addSpan(mStr, '#64748B');
-              estimatedChars += mStr.length;
-            }
-          } else if (rectW >= 72) {
-            const acc = getBarAccuracyPercent(barStats);
-            if (acc !== null) {
-              const accStr = ` ${acc}%`;
-              addSpan(accStr, acc >= 90 ? '#047857' : acc >= 70 ? '#0369A1' : '#B45309');
-              estimatedChars += accStr.length;
-            }
-          }
-        }
-
-        const pillW = Math.min(maxBadgeW, Math.max(30, estimatedChars * 6.3 + 10));
         const labelBg = document.createElementNS(SVG_NS, 'rect');
         labelBg.setAttribute('x', String(badgeX));
         labelBg.setAttribute('y', String(badgeY));
-        labelBg.setAttribute('width', String(pillW));
         labelBg.setAttribute('height', String(badgeHeight));
         labelBg.setAttribute('rx', '3');
-        labelBg.setAttribute('fill', isBarSelected ? '#F0F9FF' : 'rgba(255, 255, 255, 0.94)');
+        labelBg.setAttribute('fill', isBarSelected ? '#F0F9FF' : 'rgba(255, 255, 255, 0.95)');
         labelBg.setAttribute(
           'stroke',
           isBarSelected
             ? '#0284C7'
-            : barStats && barStats.practices > 0
-            ? 'rgba(15, 23, 42, 0.16)'
-            : 'rgba(148, 163, 184, 0.35)'
+            : hasBarActivity(barStats)
+            ? 'rgba(15, 23, 42, 0.22)'
+            : 'rgba(148, 163, 184, 0.38)'
         );
-        labelBg.setAttribute('stroke-width', isBarSelected ? '1.25' : '0.8');
+        labelBg.setAttribute('stroke-width', isBarSelected ? '1.25' : '0.85');
 
+        // Append temporarily inside labelsGroup (which we attach to svgEl after loop, OR measure directly in svgEl)
         labelsGroup.appendChild(labelBg);
         labelsGroup.appendChild(labelText);
+
+        // Pick the richest candidate that fits cleanly within maxBadgeW (fallback to estimated width before attach)
+        const chosen = candidates.find((segs) => {
+          const charLen = segs.reduce((acc, s) => acc + s.text.length, 0);
+          return charLen * 6.2 + 10 <= maxBadgeW;
+        }) ?? candidates[candidates.length - 1];
+        populateText(chosen);
+
+        const estWidth = chosen.reduce((acc, s) => acc + s.text.length, 0) * 6.2 + 10;
+        labelBg.setAttribute('width', String(Math.min(maxBadgeW, Math.max(24, estWidth))));
+        labelBg.setAttribute('data-max-w', String(maxBadgeW));
       } else {
         const isSelected = enabled && measureNumber >= startMeasure && measureNumber <= endMeasure;
         const isPointA = enabled && measureNumber === startMeasure;
@@ -381,9 +433,24 @@ export function useOSMDInteract({ osmdRef, containerRef, isReady }: UseOSMDInter
       svgEl.appendChild(overlayGroup);
     }
 
-    // Append Stats Mode labels on top so per-bar statistics are crisply legible
+    // Append Stats Mode labels on top so per-bar statistics are crisply legible, then fine-tune pill widths using real getBBox()
     if (inStatsMode && labelsGroup.childNodes.length > 0) {
       svgEl.appendChild(labelsGroup);
+      const children = Array.from(labelsGroup.children);
+      for (let i = 0; i < children.length - 1; i += 2) {
+        const bgRect = children[i] as SVGRectElement;
+        const txtEl = children[i + 1] as SVGTextElement;
+        try {
+          const textBox = txtEl.getBBox();
+          const maxW = Number(bgRect.getAttribute('data-max-w')) || 200;
+          if (textBox.width > 0) {
+            const fittedW = Math.min(maxW, Math.max(24, Math.ceil(textBox.width + 10)));
+            bgRect.setAttribute('width', String(fittedW));
+          }
+        } catch {
+          // Ignore if element is hidden
+        }
+      }
     }
   }, [containerRef, handleMeasureClick, osmdRef]);
 
@@ -406,20 +473,44 @@ export function useOSMDInteract({ osmdRef, containerRef, isReady }: UseOSMDInter
     syncMeasureOverlays,
   ]);
 
-  // Also refresh overlay coordinates on window resize (OSMD autoResize)
+  // Also refresh overlay coordinates on window resize, container resize, or when OSMD replaces its SVG
   useEffect(() => {
     if (!isReady) return;
     let timer: number | null = null;
-    const onResize = () => {
+    const scheduleSync = (delay = 280) => {
       if (timer) window.clearTimeout(timer);
-      timer = window.setTimeout(() => syncMeasureOverlays(), 180);
+      timer = window.setTimeout(() => syncMeasureOverlays(), delay);
     };
-    window.addEventListener('resize', onResize);
+
+    const handleResize = () => scheduleSync(320);
+    window.addEventListener('resize', handleResize);
+
+    const el = containerRef.current;
+    let resizeObserver: ResizeObserver | null = null;
+    let mutationObserver: MutationObserver | null = null;
+    if (el) {
+      if (typeof ResizeObserver !== 'undefined') {
+        resizeObserver = new ResizeObserver(() => scheduleSync(320));
+        resizeObserver.observe(el);
+      }
+      if (typeof MutationObserver !== 'undefined') {
+        mutationObserver = new MutationObserver(() => {
+          const svg = el.querySelector('svg');
+          if (svg && !svg.querySelector(`g.${OVERLAY_GROUP_CLASS}`)) {
+            scheduleSync(60);
+          }
+        });
+        mutationObserver.observe(el, { childList: true, subtree: true });
+      }
+    }
+
     return () => {
       if (timer) window.clearTimeout(timer);
-      window.removeEventListener('resize', onResize);
+      window.removeEventListener('resize', handleResize);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
     };
-  }, [isReady, syncMeasureOverlays]);
+  }, [containerRef, isReady, syncMeasureOverlays]);
 
   return { syncMeasureOverlays };
 }

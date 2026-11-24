@@ -15,6 +15,7 @@ import {
   ScorePiece,
   ScoreStats,
 } from '../types/music';
+import { MetronomeStyle } from '../audio/AudioEngine';
 import { DEFAULT_USER_HOTKEYS, UserHotkeysConfig } from '../types/hotkeys';
 import { PracticeStatRecord, sanitizeScoreIdForFirestore } from '../types/stats';
 
@@ -74,6 +75,8 @@ interface PracticeState {
   // Tempo & Metronome
   bpm: number;
   metronomeEnabled: boolean;
+  metronomeVolume: number;
+  metronomeStyle: MetronomeStyle;
   activeBeat: number | null;
 
   // A/B Loop + Interactive Sheet Selection Stage
@@ -142,6 +145,8 @@ interface PracticeState {
   setStatsSelectedBar: (bar: number | null) => void;
   setBpm: (bpm: number) => void;
   setMetronomeEnabled: (enabled: boolean) => void;
+  setMetronomeVolume: (volume: number) => void;
+  setMetronomeStyle: (style: MetronomeStyle) => void;
   setActiveBeat: (beat: number | null) => void;
   setLoopRange: (patch: Partial<LoopRange>) => void;
   setLoopSelectionStage: (stage: 'pickA' | 'pickB') => void;
@@ -212,6 +217,38 @@ const EMPTY_STATS: ScoreStats = {
   totalPoints: 0,
 };
 
+const METRONOME_VOLUME_STORAGE_KEY = 'anson_piano_metronome_volume';
+const METRONOME_STYLE_STORAGE_KEY = 'anson_piano_metronome_style';
+
+function getInitialMetronomeVolume(): number {
+  if (typeof window === 'undefined') return 0.85;
+  try {
+    const raw = window.localStorage.getItem(METRONOME_VOLUME_STORAGE_KEY);
+    if (raw !== null) {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) {
+        return Math.max(0, Math.min(1, parsed));
+      }
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+  return 0.85;
+}
+
+function getInitialMetronomeStyle(): MetronomeStyle {
+  if (typeof window === 'undefined') return 'classic';
+  try {
+    const raw = window.localStorage.getItem(METRONOME_STYLE_STORAGE_KEY);
+    if (raw === 'classic' || raw === 'woodblock' || raw === 'mechanical') {
+      return raw;
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+  return 'classic';
+}
+
 export const usePracticeStore = create<PracticeState>((set) => ({
   userScores: [],
   scores: SAMPLE_SCORES,
@@ -249,6 +286,8 @@ export const usePracticeStore = create<PracticeState>((set) => ({
 
   bpm: initialScore.bpm,
   metronomeEnabled: false,
+  metronomeVolume: getInitialMetronomeVolume(),
+  metronomeStyle: getInitialMetronomeStyle(),
   activeBeat: null,
 
   loopRange: {
@@ -594,17 +633,28 @@ export const usePracticeStore = create<PracticeState>((set) => ({
   enterStatsMode: () =>
     set((state) => {
       const safeScoreId = sanitizeScoreIdForFirestore(state.activeScore.id);
+      const waitHasData = state.practiceStats.some(
+        (r) => r.scoreId === safeScoreId && r.mode === 'wait' && Object.keys(r.bars).length > 0
+      );
       const tempoRecords = state.practiceStats
-        .filter((r) => r.scoreId === safeScoreId && r.mode === 'tempo')
+        .filter((r) => r.scoreId === safeScoreId && r.mode === 'tempo' && Object.keys(r.bars).length > 0)
         .sort((a, b) => a.bpm - b.bpm);
+      const tempoHasData = tempoRecords.length > 0;
       const tempoBpms = Array.from(new Set(tempoRecords.map((r) => r.bpm)));
       const defaultBpm = tempoBpms.includes(state.bpm)
         ? state.bpm
         : tempoBpms[0] ?? null;
 
+      let defaultMode: PracticeMode = state.practiceMode;
+      if (defaultMode === 'wait' && !waitHasData && tempoHasData) {
+        defaultMode = 'tempo';
+      } else if (defaultMode === 'tempo' && !tempoHasData && waitHasData) {
+        defaultMode = 'wait';
+      }
+
       return {
         isStatsMode: true,
-        statsFilterMode: state.practiceMode,
+        statsFilterMode: defaultMode,
         statsSelectedBpm: defaultBpm,
         statsSelectedBar: null,
         isPlaying: false,
@@ -657,6 +707,23 @@ export const usePracticeStore = create<PracticeState>((set) => ({
   setStatsSelectedBar: (bar) => set({ statsSelectedBar: bar }),
   setBpm: (bpm) => set({ bpm }),
   setMetronomeEnabled: (enabled) => set({ metronomeEnabled: enabled }),
+  setMetronomeVolume: (volume) => {
+    const clamped = Math.max(0, Math.min(1, Math.round(volume * 100) / 100));
+    try {
+      window.localStorage.setItem(METRONOME_VOLUME_STORAGE_KEY, String(clamped));
+    } catch {
+      // Ignore storage access errors
+    }
+    set({ metronomeVolume: clamped });
+  },
+  setMetronomeStyle: (style) => {
+    try {
+      window.localStorage.setItem(METRONOME_STYLE_STORAGE_KEY, style);
+    } catch {
+      // Ignore storage access errors
+    }
+    set({ metronomeStyle: style });
+  },
   setActiveBeat: (beat) => set({ activeBeat: beat }),
 
   setLoopRange: (patch) =>

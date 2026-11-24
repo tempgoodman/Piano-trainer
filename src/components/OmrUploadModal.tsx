@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertCircle, CheckCircle2, FileMusic, ImageUp, Loader2, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, FileMusic, ImageUp, Loader2, RotateCcw, X } from 'lucide-react';
 import { useFirebase } from '../context/FirebaseProvider';
 import { usePreferences } from '../context/PreferencesProvider';
 import { makeValidScoreId, saveUserScoreToFirestore } from '../services/firestoreScores';
@@ -125,6 +125,7 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
   const pollTimerRef = useRef<number | null>(null);
   const completedRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastFileRef = useRef<File | null>(null);
   const addCustomScore = usePracticeStore((s) => s.addCustomScore);
 
   const cleanupStreams = useCallback(() => {
@@ -230,7 +231,16 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
     } else if (payload.status === 'error') {
       completedRef.current = true;
       cleanupStreams();
-      setErrorMsg(payload.error || 'Optical Music Recognition failed.');
+      let cleanErr = payload.error || 'Optical Music Recognition failed.';
+      if (cleanErr.trim().startsWith('{')) {
+        try {
+          const parsed = JSON.parse(cleanErr) as { error?: { message?: string }; message?: string };
+          cleanErr = parsed?.error?.message || parsed?.message || cleanErr;
+        } catch {
+          // Keep original string if not JSON
+        }
+      }
+      setErrorMsg(cleanErr);
       setIsProcessing(false);
     }
   };
@@ -263,6 +273,7 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
 
   const handleFileSelected = async (file: File | undefined) => {
     if (!file) return;
+    lastFileRef.current = file;
     cleanupStreams();
     completedRef.current = false;
     setErrorMsg(null);
@@ -547,16 +558,29 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
                 <span>{errorMsg}</span>
               </div>
-              {backendUnavailable && (
-                <button
-                  type="button"
-                  disabled={isSavingCloud}
-                  onClick={() => void loadXmlIntoStudio(FALLBACK_SAMPLE_XML, pendingFilename)}
-                  className="px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 rounded-md transition-colors"
-                >
-                  {t('upload.loadSample')}
-                </button>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                {lastFileRef.current && !backendUnavailable && (
+                  <button
+                    type="button"
+                    disabled={isProcessing || isSavingCloud}
+                    onClick={() => void handleFileSelected(lastFileRef.current ?? undefined)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-50 rounded-md transition-colors"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{t('upload.retry')}</span>
+                  </button>
+                )}
+                {backendUnavailable && (
+                  <button
+                    type="button"
+                    disabled={isSavingCloud}
+                    onClick={() => void loadXmlIntoStudio(FALLBACK_SAMPLE_XML, pendingFilename)}
+                    className="px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 rounded-md transition-colors"
+                  >
+                    {t('upload.loadSample')}
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>

@@ -33,6 +33,11 @@ service cloud.firestore {
         && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isOwnedStatDocId(statId) {
+      return statId.size() > request.auth.uid.size() + 1
+        && statId[0:request.auth.uid.size() + 1] == request.auth.uid + '_';
+    }
+
     function isValidMidiNote(n) {
       return n is int && n >= 21 && n <= 108;
     }
@@ -288,19 +293,24 @@ service cloud.firestore {
     match /practiceStats/{statId} {
       allow get: if isSignedIn()
         && isValidId(statId)
-        && existing().ownerId == request.auth.uid;
+        && (
+          (resource == null && isOwnedStatDocId(statId))
+          || (resource != null && existing().ownerId == request.auth.uid)
+        );
 
       allow list: if isSignedIn()
         && resource.data.ownerId == request.auth.uid;
 
       allow create: if isVerifiedUser()
         && isValidId(statId)
+        && isOwnedStatDocId(statId)
         && isValidPracticeStat(incoming(), statId)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
 
       allow update: if isVerifiedUser()
         && isValidId(statId)
+        && isOwnedStatDocId(statId)
         && isValidPracticeStat(incoming(), statId)
         && existing().ownerId == request.auth.uid
         && incoming().ownerId == existing().ownerId

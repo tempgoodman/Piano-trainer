@@ -22,8 +22,10 @@ import {
   Square,
   Trash2,
   Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
+import { audioEngine, MetronomeStyle } from '../audio/AudioEngine';
 import { useFirebase } from '../context/FirebaseProvider';
 import { usePreferences } from '../context/PreferencesProvider';
 import { usePracticeStore } from '../store/usePracticeStore';
@@ -94,7 +96,12 @@ export function PracticeControls({
   const setBpm = usePracticeStore((s) => s.setBpm);
   const metronomeEnabled = usePracticeStore((s) => s.metronomeEnabled);
   const setMetronomeEnabled = usePracticeStore((s) => s.setMetronomeEnabled);
+  const metronomeVolume = usePracticeStore((s) => s.metronomeVolume);
+  const setMetronomeVolume = usePracticeStore((s) => s.setMetronomeVolume);
+  const metronomeStyle = usePracticeStore((s) => s.metronomeStyle);
+  const setMetronomeStyle = usePracticeStore((s) => s.setMetronomeStyle);
   const activeBeat = usePracticeStore((s) => s.activeBeat);
+  const lastNonZeroMetronomeVolumeRef = useRef(0.85);
 
   const loopRange = usePracticeStore((s) => s.loopRange);
   const setLoopRange = usePracticeStore((s) => s.setLoopRange);
@@ -150,6 +157,49 @@ export function PracticeControls({
     { id: 'midi', label: t('controls.inputMidi') },
     { id: 'virtual', label: t('controls.inputVirtual') },
   ];
+
+  const metronomeStyleOptions: { id: MetronomeStyle; label: string }[] = [
+    { id: 'classic', label: t('controls.metronomeStyleClassic') },
+    { id: 'woodblock', label: t('controls.metronomeStyleWoodblock') },
+    { id: 'mechanical', label: t('controls.metronomeStyleMechanical') },
+  ];
+
+  const isMetronomeActivelyTicking =
+    !isStatsMode &&
+    metronomeEnabled &&
+    (playbackMode === 'none' || playbackMode === 'computer');
+
+  const handleSelectMetronomeStyle = (style: MetronomeStyle) => {
+    setMetronomeStyle(style);
+    audioEngine.setMetronomeStyle(style);
+    if (!isMetronomeActivelyTicking && metronomeVolume > 0) {
+      audioEngine.previewMetronomeClick(true);
+    }
+  };
+
+  const handleMetronomeVolumeChange = (nextPct: number) => {
+    const normalized = Math.max(0, Math.min(1, nextPct / 100));
+    if (normalized > 0) {
+      lastNonZeroMetronomeVolumeRef.current = normalized;
+    }
+    setMetronomeVolume(normalized);
+    audioEngine.setMetronomeVolume(normalized);
+  };
+
+  const handleToggleMetronomeMute = () => {
+    if (metronomeVolume > 0) {
+      lastNonZeroMetronomeVolumeRef.current = metronomeVolume;
+      setMetronomeVolume(0);
+      audioEngine.setMetronomeVolume(0);
+    } else {
+      const restored = lastNonZeroMetronomeVolumeRef.current > 0 ? lastNonZeroMetronomeVolumeRef.current : 0.85;
+      setMetronomeVolume(restored);
+      audioEngine.setMetronomeVolume(restored);
+      if (!isMetronomeActivelyTicking) {
+        audioEngine.previewMetronomeClick(true);
+      }
+    }
+  };
 
   const midiLabel =
     midiDevices.length > 0
@@ -207,11 +257,11 @@ export function PracticeControls({
   return (
     <section
       aria-label={t('controls.aria')}
-      className="w-full bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-2.5 transition-colors"
+      className="w-full shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-2.5 transition-colors"
     >
       <div
         ref={toolbarRef}
-        className="max-w-[1360px] mx-auto flex flex-wrap items-center justify-between gap-3"
+        className="w-full flex flex-wrap items-center justify-between gap-3"
       >
         {/* Group 1: Core Practice Transport */}
         <div className="flex flex-wrap items-center gap-2">
@@ -616,41 +666,124 @@ export function PracticeControls({
                 </div>
 
                 {/* Metronome */}
-                <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
-                      {t('controls.metronome')}
-                    </span>
-                    {metronomeEnabled && (playbackMode === 'none' || playbackMode === 'computer') && (
-                      <div className="flex items-center gap-1" aria-label={t('controls.metronome')}>
-                        {[0, 1, 2, 3].map((b) => (
-                          <span
-                            key={b}
-                            className={`w-2 h-2 rounded-full transition-transform ${
-                              activeBeat === b
-                                ? b === 0
-                                  ? 'bg-sky-600 dark:bg-sky-400 scale-125'
-                                  : 'bg-sky-400 scale-110'
-                                : 'bg-slate-200 dark:bg-slate-700'
-                            }`}
-                          />
-                        ))}
-                      </div>
-                    )}
+                <div className="space-y-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                        {t('controls.metronome')}
+                      </span>
+                      {metronomeEnabled && (playbackMode === 'none' || playbackMode === 'computer') && (
+                        <div className="flex items-center gap-1" aria-label={t('controls.metronome')}>
+                          {[0, 1, 2, 3].map((b) => (
+                            <span
+                              key={b}
+                              className={`w-2 h-2 rounded-full transition-transform ${
+                                activeBeat === b
+                                  ? b === 0
+                                    ? 'bg-sky-600 dark:bg-sky-400 scale-125'
+                                    : 'bg-sky-400 scale-110'
+                                  : 'bg-slate-200 dark:bg-slate-700'
+                              }`}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setMetronomeEnabled(!metronomeEnabled)}
+                      aria-pressed={metronomeEnabled}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap ${
+                        metronomeEnabled
+                          ? 'bg-sky-600 text-white border-sky-600'
+                          : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      <Volume2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>{metronomeEnabled ? t('controls.on') : t('controls.off')}</span>
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setMetronomeEnabled(!metronomeEnabled)}
-                    aria-pressed={metronomeEnabled}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap ${
-                      metronomeEnabled
-                        ? 'bg-sky-600 text-white border-sky-600'
-                        : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700'
-                    }`}
-                  >
-                    <Volume2 className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>{metronomeEnabled ? t('controls.on') : t('controls.off')}</span>
-                  </button>
+
+                  {/* Metronome Style */}
+                  <div className="space-y-1.5">
+                    <span className="block text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                      {t('controls.metronomeStyle')}
+                    </span>
+                    <div
+                      className="grid grid-cols-3 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg"
+                      role="group"
+                      aria-label={t('controls.metronomeStyle')}
+                    >
+                      {metronomeStyleOptions.map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => handleSelectMetronomeStyle(opt.id)}
+                          aria-pressed={metronomeStyle === opt.id}
+                          className={`px-2 py-1 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                            metronomeStyle === opt.id
+                              ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
+                              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Metronome Volume */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label
+                        htmlFor="metronome-volume-slider"
+                        className="text-[11px] font-medium text-slate-500 dark:text-slate-400"
+                      >
+                        {t('controls.metronomeVolume')}
+                      </label>
+                      <span className="text-xs font-semibold font-mono-tabular text-slate-700 dark:text-slate-200">
+                        {Math.round(metronomeVolume * 100)}%
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleToggleMetronomeMute}
+                        aria-label={
+                          metronomeVolume > 0
+                            ? t('controls.muteMetronome')
+                            : t('controls.unmuteMetronome')
+                        }
+                        className="p-1.5 text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md transition-colors"
+                      >
+                        {metronomeVolume > 0 ? (
+                          <Volume2 className="w-3.5 h-3.5" aria-hidden="true" />
+                        ) : (
+                          <VolumeX className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+                        )}
+                      </button>
+                      <input
+                        id="metronome-volume-slider"
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={Math.round(metronomeVolume * 100)}
+                        onChange={(e) => handleMetronomeVolumeChange(Number(e.target.value))}
+                        onPointerUp={() => {
+                          if (!isMetronomeActivelyTicking && metronomeVolume > 0) {
+                            audioEngine.previewMetronomeClick(true);
+                          }
+                        }}
+                        onKeyUp={() => {
+                          if (!isMetronomeActivelyTicking && metronomeVolume > 0) {
+                            audioEngine.previewMetronomeClick(true);
+                          }
+                        }}
+                        className="flex-1 accent-sky-600 cursor-pointer"
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 {/* A/B Measure Loop */}

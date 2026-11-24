@@ -430,8 +430,8 @@ export function SheetMusicEditorPage() {
   return (
     <div className="min-h-screen flex flex-col bg-[#F8FAFC] dark:bg-[#0B1120] text-[#0F172A] dark:text-slate-100 transition-colors">
       {/* Isolated Editor Header */}
-      <header className="w-full bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3.5 transition-colors">
-        <div className="max-w-[1360px] mx-auto flex flex-wrap items-center justify-between gap-4">
+      <header className="w-full shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-3.5 transition-colors">
+        <div className="w-full flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <Link
               to="/"
@@ -539,8 +539,8 @@ export function SheetMusicEditorPage() {
       </header>
 
       {/* Score Metadata & Live Engraving Status Strip */}
-      <section className="w-full bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-2.5 transition-colors">
-        <div className="max-w-[1360px] mx-auto flex flex-wrap items-center justify-between gap-4">
+      <section className="w-full shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-2.5 transition-colors">
+        <div className="w-full flex flex-wrap items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-3">
             <label htmlFor="score-title-input" className="text-xs font-semibold text-slate-500 dark:text-slate-400">
               {t('editor.titleLabel')}
@@ -591,7 +591,7 @@ export function SheetMusicEditorPage() {
       </section>
 
       {/* Main Standalone Editor Canvas */}
-      <main className="flex-1 w-full max-w-[1360px] mx-auto px-6 py-5 flex flex-col gap-4">
+      <main className="flex-1 w-full px-4 sm:px-6 py-5 flex flex-col gap-4">
         <div className="relative flex-1 bg-white dark:bg-[#EAEFF4] border border-slate-200 dark:border-slate-700 text-slate-900 rounded-xl p-5 md:p-7 min-h-[480px] shadow-xs overflow-visible">
           {isLoadingScore && (
             <div className="flex items-center justify-center py-24 text-sm text-slate-600 gap-2">

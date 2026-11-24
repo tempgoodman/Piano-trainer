@@ -5,7 +5,7 @@
 1. **Strict Private Ownership**:
    - Every document in `/scores/{scoreId}` belongs to one authenticated, email-verified user (`ownerId == request.auth.uid`).
    - Every document in `/userSettings/{userId}` belongs strictly to the user matching `userId == request.auth.uid` (`allow get` only; `allow list` is omitted/denied).
-   - Every document in `/practiceStats/{statId}` belongs to one authenticated, email-verified user (`ownerId == request.auth.uid`).
+   - Every document in `/practiceStats/{statId}` belongs to one authenticated, email-verified user (`ownerId == request.auth.uid`, with `statId` prefixed by `${request.auth.uid}_` so `get` checks on own non-existent buckets succeed without allowing cross-user probing).
 2. **Global Default Deny**: Any collection path outside `/scores/{scoreId}`, `/userSettings/{userId}`, and `/practiceStats/{statId}` (including `/test/connection`) is explicitly denied (`allow read, write: if false`).
 3. **Document ID Hardening**: Single-document operations (`get`, `create`, `update`, `delete`) require path IDs (`scoreId`, `userId`, `statId`) to match `^[a-zA-Z0-9_\-]+$` with length `<= 128`.
 4. **Schema & Volumetric Bounds (Sync with `firebase-blueprint.json`)**:

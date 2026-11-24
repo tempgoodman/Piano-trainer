@@ -51,6 +51,8 @@ export function PracticePlayerPage() {
   const playbackMode = usePracticeStore((s) => s.playbackMode);
   const bpm = usePracticeStore((s) => s.bpm);
   const metronomeEnabled = usePracticeStore((s) => s.metronomeEnabled);
+  const metronomeVolume = usePracticeStore((s) => s.metronomeVolume);
+  const metronomeStyle = usePracticeStore((s) => s.metronomeStyle);
   const activeScore = usePracticeStore((s) => s.activeScore);
   const setActiveBeat = usePracticeStore((s) => s.setActiveBeat);
   const hotkeys = usePracticeStore((s) => s.hotkeys);
@@ -190,7 +192,16 @@ export function PracticePlayerPage() {
     uploadOpen,
   ]);
 
-  // 6. Web Audio Metronome: plays continuously whenever enabled in Wait Mode, Tempo Mode, or Computer Auto-Play (paused in Stats Mode)
+  // 6a. Keep metronome volume & style synced live without resetting the beat clock
+  useEffect(() => {
+    audioEngine.setMetronomeVolume(metronomeVolume);
+  }, [metronomeVolume]);
+
+  useEffect(() => {
+    audioEngine.setMetronomeStyle(metronomeStyle);
+  }, [metronomeStyle]);
+
+  // 6b. Web Audio Metronome: plays continuously whenever enabled in Wait Mode, Tempo Mode, or Computer Auto-Play (paused in Stats Mode)
   useEffect(() => {
     const beatsPerMeasure = Number(activeScore.timeSignature.split('/')[0]) || 4;
     audioEngine.configureMetronome(bpm, beatsPerMeasure);
@@ -229,7 +240,7 @@ export function PracticePlayerPage() {
   );
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#F8FAFC] dark:bg-[#0B1120] text-[#0F172A] dark:text-slate-100 transition-colors">
+    <div className="min-h-dvh md:h-dvh flex flex-col md:overflow-hidden bg-[#F8FAFC] dark:bg-[#0B1120] text-[#0F172A] dark:text-slate-100 transition-colors">
       <TopBar onOpenUpload={() => setUploadOpen(true)} />
 
       <PracticeControls
@@ -243,7 +254,7 @@ export function PracticePlayerPage() {
         onOpenHotkeys={() => setHotkeyModalOpen(true)}
       />
 
-      <main className="flex-1 flex flex-col justify-between">
+      <main className="flex-1 min-h-0 flex flex-col">
         <SheetMusicViewer
           osmdRef={osmdRef}
           onScoreReady={syncCursorTargets}
@@ -259,8 +270,8 @@ export function PracticePlayerPage() {
             onOpenHotkeys={() => setHotkeyModalOpen(true)}
           />
         ) : (
-          <footer className="w-full bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-6 py-2.5 transition-colors">
-            <div className="max-w-[1360px] mx-auto flex flex-wrap items-center justify-between gap-3">
+          <footer className="w-full shrink-0 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-2.5 transition-colors">
+            <div className="w-full flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 dark:text-slate-300">
                 <span className="font-mono-tabular">
                   <span className="font-sans font-medium text-slate-500 dark:text-slate-400">

@@ -226,7 +226,7 @@ export function VirtualPiano({
   return (
     <section
       aria-label="Virtual piano keyboard"
-      className="w-full max-w-[1360px] mx-auto px-6 pb-6 pt-1"
+      className="w-full shrink-0 px-4 sm:px-6 pb-4 pt-1"
     >
       {/* Keyboard Header Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4 mb-2.5">
