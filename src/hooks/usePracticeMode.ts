@@ -5,13 +5,32 @@ import {
   evaluateChordInput,
   GOOD_WINDOW_MS,
 } from '../engines/ScoringEngine';
+import { auth } from '../firebase';
+import { recordBarPracticeStatsToFirestore } from '../services/firestoreStats';
 import { usePracticeStore } from '../store/usePracticeStore';
-import { ExpectedNote, HandMode, midiToNoteName, NoteEvent } from '../types/music';
+import {
+  ExpectedNote,
+  HandMode,
+  midiToNoteName,
+  NoteEvent,
+  PlaybackMode,
+  PracticeMode,
+  ScoreGrade,
+} from '../types/music';
+import { BarStatsDeltaMap } from '../types/stats';
 import {
   colorNoteList,
   colorNotesAtCursor,
   resetAllOSMDNoteColors,
 } from '../utils/osmdColoring';
+
+interface BarAccumulator {
+  perfect: number;
+  good: number;
+  wrong: number;
+  miss: number;
+  touched: boolean;
+}
 
 interface PendingBeatWindow {
   measureNumber: number;
@@ -107,6 +126,43 @@ function getStepDurationWholeNotes(osmd: OpenSheetMusicDisplay): number {
   return lengths.length > 0 ? Math.min(...lengths) : 0.25;
 }
 
+export function computeShouldShowSheetGuide(state: {
+  practiceMode: PracticeMode;
+  playbackMode: PlaybackMode;
+  showTempoGuide: boolean;
+  isGuideAutoRevealed: boolean;
+  isStatsMode?: boolean;
+}): boolean {
+  if (state.isStatsMode) return false;
+  if (state.playbackMode !== 'none') return true;
+  if (state.practiceMode !== 'tempo') return true;
+  return state.showTempoGuide || state.isGuideAutoRevealed;
+}
+
+/**
+ * Toggles ONLY the visual guide bar (`cursorElement`) on the OSMD sheet.
+ * Keeps OSMD's cursor logically active so `followCursor` scrolling and SVG notehead coloring
+ * (green/yellow/red/grey results) continue working identically whether the guide is hidden or shown.
+ */
+export function syncSheetGuideVisibility(
+  osmd: OpenSheetMusicDisplay | null,
+  shouldShow: boolean
+): void {
+  const primaryCursor = osmd?.cursors?.[0] ?? osmd?.cursor;
+  if (!primaryCursor) return;
+
+  if (primaryCursor.Hidden) {
+    primaryCursor.show();
+  }
+  const el = primaryCursor.cursorElement;
+  if (el) {
+    el.style.transition = 'opacity 140ms ease';
+    el.style.opacity = shouldShow ? '1' : '0';
+    el.style.visibility = shouldShow ? 'visible' : 'hidden';
+    el.style.pointerEvents = 'none';
+  }
+}
+
 /**
  * Anson Practice Piano — Unified Practice Mode Hook (Deliverable 2: Smart Start & Auto-Reset)
  *
@@ -128,14 +184,102 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
   const stepDurationWholeRef = useRef<number>(0.25);
   const currentBeatRawNotesRef = useRef<Note[]>([]);
   const pendingGraceBeatsRef = useRef<PendingBeatWindow[]>([]);
+  const barSessionRef = useRef<Record<number, BarAccumulator>>({});
+  const completedTempoMeasuresRef = useRef<Set<number>>(new Set());
+  const lastTrackedMeasureRef = useRef<number>(1);
 
+  const activeScoreId = usePracticeStore((s) => s.activeScore.id);
   const practiceMode = usePracticeStore((s) => s.practiceMode);
+  const playbackMode = usePracticeStore((s) => s.playbackMode);
+  const showTempoGuide = usePracticeStore((s) => s.showTempoGuide);
+  const isGuideAutoRevealed = usePracticeStore((s) => s.isGuideAutoRevealed);
+  const isStatsMode = usePracticeStore((s) => s.isStatsMode);
   const isArmed = usePracticeStore((s) => s.isArmed);
   const isPlaying = usePracticeStore((s) => s.isPlaying);
   const bpm = usePracticeStore((s) => s.bpm);
   const loopEnabled = usePracticeStore((s) => s.loopRange.enabled);
   const loopStart = usePracticeStore((s) => s.loopRange.startMeasure);
   const loopEnd = usePracticeStore((s) => s.loopRange.endMeasure);
+
+  // Clear any transient per-bar accumulators when switching sheets
+  useEffect(() => {
+    barSessionRef.current = {};
+    completedTempoMeasuresRef.current.clear();
+    lastTrackedMeasureRef.current = 1;
+  }, [activeScoreId]);
+
+  const recordBarEvent = useCallback((measureNumber: number, grade: ScoreGrade) => {
+    const currentUser = auth.currentUser;
+    if (!currentUser || !currentUser.emailVerified) return;
+    const mNum = Math.max(1, measureNumber);
+    const existing = barSessionRef.current[mNum] ?? {
+      perfect: 0,
+      good: 0,
+      wrong: 0,
+      miss: 0,
+      touched: false,
+    };
+    existing[grade] += 1;
+    existing.touched = true;
+    barSessionRef.current[mNum] = existing;
+  }, []);
+
+  const flushBarsToCloud = useCallback(
+    (measuresToFlush: number[], mode: PracticeMode, tempoBpm: number, incrementRun = false) => {
+      const currentUser = auth.currentUser;
+      if (!currentUser || !currentUser.emailVerified) {
+        for (const m of measuresToFlush) {
+          delete barSessionRef.current[m];
+          completedTempoMeasuresRef.current.delete(m);
+        }
+        return;
+      }
+
+      const barDeltas: BarStatsDeltaMap = {};
+      for (const mNum of measuresToFlush) {
+        const acc = barSessionRef.current[mNum];
+        completedTempoMeasuresRef.current.delete(mNum);
+        if (!acc || !acc.touched) continue;
+
+        if (mode === 'wait') {
+          if (acc.perfect > 0 || acc.wrong > 0) {
+            barDeltas[mNum] = {
+              practices: acc.perfect > 0 ? 1 : 0,
+              perfect: acc.perfect,
+              good: 0,
+              wrong: acc.wrong,
+              miss: 0,
+            };
+          }
+        } else {
+          const totalGraded = acc.perfect + acc.good + acc.wrong + acc.miss;
+          if (totalGraded > 0) {
+            barDeltas[mNum] = {
+              practices: 1,
+              perfect: acc.perfect,
+              good: acc.good,
+              wrong: acc.wrong,
+              miss: acc.miss,
+            };
+          }
+        }
+        delete barSessionRef.current[mNum];
+      }
+
+      if (Object.keys(barDeltas).length === 0 && !incrementRun) return;
+
+      const scoreId = usePracticeStore.getState().activeScore.id;
+      void recordBarPracticeStatsToFirestore({
+        uid: currentUser.uid,
+        scoreId,
+        mode,
+        bpm: tempoBpm,
+        barDeltas,
+        incrementRun,
+      });
+    },
+    []
+  );
 
   const wholeNotesToMs = useCallback((wholeNotes: number, currentBpm: number) => {
     const quarterMs = 60000 / Math.max(30, currentBpm);
@@ -174,10 +318,43 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
     const state = usePracticeStore.getState();
     const endReached = osmd.cursor.Iterator?.EndReached ?? false;
     const currentMeasure = getCursorMeasureNumber(osmd);
+    const prevMeasure = lastTrackedMeasureRef.current;
 
     // Check Point B (A/B Loop end) OR Song Completion
     const passedLoopEnd = state.loopRange.enabled && (endReached || currentMeasure > state.loopRange.endMeasure);
     const finishedWholeSong = !state.loopRange.enabled && endReached;
+
+    // Flush completed bar stats when leaving a measure or completing a pass
+    if (!state.isStatsMode && state.playbackMode === 'none') {
+      if (passedLoopEnd || finishedWholeSong) {
+        if (state.practiceMode === 'tempo') {
+          // Resolve any remaining pending grace beats as misses before flushing final bar stats
+          for (const beat of pendingGraceBeatsRef.current) {
+            const missedNotes = beat.notes.filter((n) => !beat.matchedMidis.has(n.halfTone + 12));
+            for (let i = 0; i < missedNotes.length; i++) {
+              recordBarEvent(beat.measureNumber, 'miss');
+            }
+          }
+        }
+        const allTouchedMeasures = Object.keys(barSessionRef.current).map(Number);
+        if (allTouchedMeasures.length > 0) {
+          flushBarsToCloud(allTouchedMeasures, state.practiceMode, state.bpm, true);
+        }
+      } else if (currentMeasure !== prevMeasure) {
+        if (state.practiceMode === 'wait') {
+          flushBarsToCloud([prevMeasure], 'wait', 0, false);
+        } else if (state.practiceMode === 'tempo' && state.isPlaying) {
+          const hasGracePending = pendingGraceBeatsRef.current.some(
+            (b) => b.measureNumber === prevMeasure
+          );
+          if (hasGracePending) {
+            completedTempoMeasuresRef.current.add(prevMeasure);
+          } else {
+            flushBarsToCloud([prevMeasure], 'tempo', state.bpm, false);
+          }
+        }
+      }
+    }
 
     if (passedLoopEnd || finishedWholeSong) {
       const targetStart = state.loopRange.enabled ? state.loopRange.startMeasure : 1;
@@ -188,6 +365,7 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
       );
 
       pendingGraceBeatsRef.current = [];
+      completedTempoMeasuresRef.current.clear();
       jumpCursorToMeasure(osmd, targetStart);
 
       if (state.practiceMode === 'tempo') {
@@ -213,11 +391,14 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
     currentBeatRawNotesRef.current = extracted.rawNotes;
     stepDurationWholeRef.current = getStepDurationWholeNotes(osmd);
 
-    osmd.cursor.show();
-    usePracticeStore.getState().setCurrentMeasure(getCursorMeasureNumber(osmd));
-    usePracticeStore.getState().setExpectedNotes(extracted.expected);
-    usePracticeStore.getState().clearMatchedMidis();
-  }, [osmdRef, skipRestsAtCursor]);
+    const latestState = usePracticeStore.getState();
+    const resolvedMeasure = getCursorMeasureNumber(osmd);
+    lastTrackedMeasureRef.current = resolvedMeasure;
+    syncSheetGuideVisibility(osmd, computeShouldShowSheetGuide(latestState));
+    latestState.setCurrentMeasure(resolvedMeasure);
+    latestState.setExpectedNotes(extracted.expected);
+    latestState.clearMatchedMidis();
+  }, [flushBarsToCloud, osmdRef, recordBarEvent, skipRestsAtCursor]);
 
   const advanceCursor = useCallback(() => {
     const osmd = osmdRef.current;
@@ -235,9 +416,15 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
     const state = usePracticeStore.getState();
 
     pendingGraceBeatsRef.current = [];
+    barSessionRef.current = {};
+    completedTempoMeasuresRef.current.clear();
     smartStartAnchorMsRef.current = null;
     smartStartMatchedFirstNoteRef.current = null;
     state.resetSessionStats();
+
+    if (state.isStatsMode) {
+      return;
+    }
 
     if (state.practiceMode === 'tempo') {
       state.armTempoMode();
@@ -262,13 +449,19 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
    * Hotkey 2 ("Rest / Stop"): Stops active Tempo playback and switches to Wait Mode.
    */
   const stopToWaitMode = useCallback(() => {
+    const state = usePracticeStore.getState();
+    if (completedTempoMeasuresRef.current.size > 0) {
+      flushBarsToCloud(Array.from(completedTempoMeasuresRef.current), 'tempo', state.bpm, false);
+    }
     pendingGraceBeatsRef.current = [];
+    barSessionRef.current = {};
+    completedTempoMeasuresRef.current.clear();
     smartStartAnchorMsRef.current = null;
-    usePracticeStore.getState().setPracticeMode('wait');
+    state.setPracticeMode('wait');
     if (osmdRef.current) {
       syncCursorTargets();
     }
-  }, [osmdRef, syncCursorTargets]);
+  }, [flushBarsToCloud, osmdRef, syncCursorTargets]);
 
   // Snap cursor into A/B loop window whenever loop range is clicked/adjusted
   useEffect(() => {
@@ -288,6 +481,20 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
       nextStepTimeMsRef.current = stepExpectedTimeMsRef.current + stepMs;
     }
   }, [bpm, practiceMode, isPlaying, wholeNotesToMs]);
+
+  // Immediately update OSMD sheet guide visibility when toggle, mode, Stats Mode, or 4-note lost recovery changes
+  useEffect(() => {
+    syncSheetGuideVisibility(
+      osmdRef.current,
+      computeShouldShowSheetGuide({
+        practiceMode,
+        playbackMode,
+        showTempoGuide,
+        isGuideAutoRevealed,
+        isStatsMode,
+      })
+    );
+  }, [practiceMode, playbackMode, showTempoGuide, isGuideAutoRevealed, isStatsMode, osmdRef]);
 
   const flushExpiredGraceBeats = useCallback(
     (nowMs: number) => {
@@ -320,6 +527,7 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
                 staffIndex,
                 outcome: 'miss',
               });
+              recordBarEvent(beat.measureNumber, 'miss');
             }
           }
         } else {
@@ -328,8 +536,23 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
       }
 
       pendingGraceBeatsRef.current = remaining;
+
+      // Flush any completed Tempo measures whose grace windows have now fully settled
+      if (completedTempoMeasuresRef.current.size > 0) {
+        const readyToFlush: number[] = [];
+        for (const mNum of completedTempoMeasuresRef.current) {
+          const stillPending = remaining.some((b) => b.measureNumber === mNum);
+          if (!stillPending) {
+            readyToFlush.push(mNum);
+          }
+        }
+        if (readyToFlush.length > 0) {
+          const curBpm = usePracticeStore.getState().bpm;
+          flushBarsToCloud(readyToFlush, 'tempo', curBpm, false);
+        }
+      }
     },
-    [osmdRef]
+    [flushBarsToCloud, osmdRef, recordBarEvent]
   );
 
   /**
@@ -434,6 +657,8 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
       if (event.type !== 'noteOn') return;
 
       const state = usePracticeStore.getState();
+      // User must exit Practice Stats mode before practicing again
+      if (state.isStatsMode) return;
       const osmd = osmdRef.current;
       const inferStaffFromMidi = (midi: number, expectedList: ExpectedNote[]): number => {
         const directMatch = expectedList.find((n) => n.midi === midi);
@@ -466,6 +691,7 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
             outcome: 'hit',
             deltaMs: 0,
           });
+          recordBarEvent(state.currentMeasure, 'perfect');
 
           const updatedMatched = new Set(usePracticeStore.getState().matchedMidis);
           updatedMatched.add(event.midi);
@@ -480,6 +706,7 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
             staffIndex: inferStaffFromMidi(event.midi, expected),
             outcome: 'wrong',
           });
+          recordBarEvent(state.currentMeasure, 'wrong');
           state.triggerWrongNote(event.midi, event.noteName);
           if (wrongTimerRef.current) window.clearTimeout(wrongTimerRef.current);
           wrongTimerRef.current = window.setTimeout(() => {
@@ -504,6 +731,8 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
           smartStartMatchedFirstNoteRef.current = event.midi;
 
           resetAllOSMDNoteColors(osmd);
+          barSessionRef.current = {};
+          completedTempoMeasuresRef.current.clear();
           state.startPlayingTempo();
           state.incrementDetectedNotes();
           colorNotesAtCursor(osmd, 'perfect', {
@@ -517,6 +746,7 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
             outcome: 'hit',
             deltaMs: 0,
           });
+          recordBarEvent(state.currentMeasure, 'perfect');
         } else {
           // Stay Armed until user strikes the first expected note
           state.triggerWrongNote(event.midi, event.noteName);
@@ -570,6 +800,7 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
             outcome: result.grade === 'perfect' || result.grade === 'good' ? 'hit' : 'miss',
             deltaMs: result.deltaMs,
           });
+          recordBarEvent(graceBeat.measureNumber, result.grade);
           return;
         }
       }
@@ -582,6 +813,7 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
           staffIndex: event.midi < 60 ? 2 : 1,
           outcome: 'wrong',
         });
+        recordBarEvent(state.currentMeasure, 'wrong');
         return;
       }
 
@@ -626,8 +858,9 @@ export function usePracticeMode(osmdRef: React.MutableRefObject<OpenSheetMusicDi
             : 'miss',
         deltaMs: result.deltaMs,
       });
+      recordBarEvent(state.currentMeasure, result.grade);
     },
-    [advanceCursor, osmdRef]
+    [advanceCursor, osmdRef, recordBarEvent]
   );
 
   return {

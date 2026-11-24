@@ -1,0 +1,327 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Hardened Global Primitives
+    // -------------------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string
+        && id.size() >= 1
+        && id.size() <= 128
+        && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidMidiNote(n) {
+      return n is int && n >= 21 && n <= 108;
+    }
+
+    function isValidMidiChord(notes) {
+      return notes is list
+        && notes.size() >= 1
+        && notes.size() <= 4
+        && isValidMidiNote(notes[0])
+        && (notes.size() < 2 || isValidMidiNote(notes[1]))
+        && (notes.size() < 3 || isValidMidiNote(notes[2]))
+        && (notes.size() < 4 || isValidMidiNote(notes[3]));
+    }
+
+    function isValidKeyboardKey(k) {
+      return k is string
+        && k.size() >= 1
+        && k.size() <= 20
+        && k.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation Blueprint for UserScore (synchronized with firebase-blueprint.json)
+    // -------------------------------------------------------------------------
+    function isValidUserScore(data, scoreId) {
+      return data.keys().hasAll([
+          'id',
+          'ownerId',
+          'title',
+          'composer',
+          'level',
+          'timeSignature',
+          'measures',
+          'bpm',
+          'musicXml',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'ownerId',
+          'title',
+          'composer',
+          'level',
+          'timeSignature',
+          'measures',
+          'bpm',
+          'musicXml',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == scoreId
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.title is string
+        && data.title.size() >= 1
+        && data.title.size() <= 120
+        && data.composer is string
+        && data.composer.size() >= 1
+        && data.composer.size() <= 120
+        && data.level is string
+        && data.level.size() >= 1
+        && data.level.size() <= 20
+        && data.level in ['Beginner', 'Intermediate', 'Advanced', 'Custom']
+        && data.timeSignature is string
+        && data.timeSignature.size() >= 3
+        && data.timeSignature.size() <= 10
+        && data.timeSignature.matches('^[0-9]{1,2}/[0-9]{1,2}$')
+        && data.measures is int
+        && data.measures >= 1
+        && data.measures <= 1000
+        && data.bpm is int
+        && data.bpm >= 30
+        && data.bpm <= 240
+        && data.musicXml is string
+        && data.musicXml.size() >= 20
+        && data.musicXml.size() <= 800000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation Blueprint for UserHotkeys (synchronized with firebase-blueprint.json)
+    // -------------------------------------------------------------------------
+    function isValidUserHotkeys(data, userId) {
+      return data.keys().hasAll([
+          'ownerId',
+          'restartMidiNotes',
+          'stopMidiNotes',
+          'restartKey',
+          'stopKey',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'restartMidiNotes',
+          'stopMidiNotes',
+          'restartKey',
+          'stopKey',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && isValidMidiChord(data.restartMidiNotes)
+        && isValidMidiChord(data.stopMidiNotes)
+        && isValidKeyboardKey(data.restartKey)
+        && isValidKeyboardKey(data.stopKey)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation Blueprint for PracticeStatDoc (synchronized with firebase-blueprint.json)
+    // -------------------------------------------------------------------------
+    function isValidPracticeStat(data, statId) {
+      return data.keys().hasAll([
+          'id',
+          'ownerId',
+          'scoreId',
+          'mode',
+          'bpm',
+          'totalRuns',
+          'bars',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'ownerId',
+          'scoreId',
+          'mode',
+          'bpm',
+          'totalRuns',
+          'bars',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == statId
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && isValidId(data.scoreId)
+        && data.mode is string
+        && data.mode.size() >= 4
+        && data.mode.size() <= 10
+        && data.mode in ['wait', 'tempo']
+        && data.bpm is int
+        && (
+          (data.mode == 'wait' && data.bpm == 0)
+          || (data.mode == 'tempo' && data.bpm >= 30 && data.bpm <= 240)
+        )
+        && data.totalRuns is int
+        && data.totalRuns >= 0
+        && data.totalRuns <= 100000
+        && data.bars is map
+        && data.bars.size() <= 1000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection: /scores/{scoreId} (Private per-user MusicXML library)
+    // -------------------------------------------------------------------------
+    match /scores/{scoreId} {
+      allow get: if isSignedIn()
+        && isValidId(scoreId)
+        && existing().ownerId == request.auth.uid;
+
+      allow list: if isSignedIn()
+        && resource.data.ownerId == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(scoreId)
+        && isValidUserScore(incoming(), scoreId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(scoreId)
+        && isValidUserScore(incoming(), scoreId)
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Edit Score Content / Metadata
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title',
+            'composer',
+            'level',
+            'timeSignature',
+            'measures',
+            'bpm',
+            'musicXml',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(scoreId)
+        && existing().ownerId == request.auth.uid;
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection: /userSettings/{userId} (Private per-user hotkey preferences)
+    // -------------------------------------------------------------------------
+    match /userSettings/{userId} {
+      // Single-document read only (no list queries needed or permitted)
+      allow get: if isSignedIn()
+        && isValidId(userId)
+        && userId == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && userId == request.auth.uid
+        && isValidUserHotkeys(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && userId == request.auth.uid
+        && isValidUserHotkeys(incoming(), userId)
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Update Custom Hotkey Bindings
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'restartMidiNotes',
+            'stopMidiNotes',
+            'restartKey',
+            'stopKey',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(userId)
+        && userId == request.auth.uid
+        && existing().ownerId == request.auth.uid;
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection: /practiceStats/{statId} (Private per-bar practice stats)
+    // -------------------------------------------------------------------------
+    match /practiceStats/{statId} {
+      allow get: if isSignedIn()
+        && isValidId(statId)
+        && existing().ownerId == request.auth.uid;
+
+      allow list: if isSignedIn()
+        && resource.data.ownerId == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(statId)
+        && isValidPracticeStat(incoming(), statId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(statId)
+        && isValidPracticeStat(incoming(), statId)
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().id == existing().id
+        && incoming().scoreId == existing().scoreId
+        && incoming().mode == existing().mode
+        && incoming().bpm == existing().bpm
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Record Bar Practice Counts & Grades
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'totalRuns',
+            'bars',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(statId)
+        && existing().ownerId == request.auth.uid;
+    }
+  }
+}

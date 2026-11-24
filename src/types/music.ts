@@ -102,6 +102,9 @@ export interface ScorePiece {
   measures: number;
   bpm: number;
   musicXml: string;
+  ownerId?: string;
+  isCloudSaved?: boolean;
+  updatedAtMs?: number;
 }
 
 export interface OMRProgressMessage {

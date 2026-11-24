@@ -1,0 +1,227 @@
+{
+  "entities": {
+    "UserScore": {
+      "title": "UserScore",
+      "description": "A private MusicXML piano score uploaded or customized by an authenticated user.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique score identifier matching the Firestore document ID."
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Authentication UID of the score owner."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Display title of the piano piece."
+        },
+        "composer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Composer or source label."
+        },
+        "level": {
+          "type": "string",
+          "enum": ["Beginner", "Intermediate", "Advanced", "Custom"],
+          "description": "Difficulty or category tag."
+        },
+        "timeSignature": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 10,
+          "pattern": "^[0-9]{1,2}/[0-9]{1,2}$",
+          "description": "Musical time signature (e.g. 4/4, 3/4, 6/8)."
+        },
+        "measures": {
+          "type": "integer",
+          "description": "Total number of measures in the MusicXML score (1 to 1000)."
+        },
+        "bpm": {
+          "type": "integer",
+          "description": "Default practice tempo in beats per minute (30 to 240)."
+        },
+        "musicXml": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 800000,
+          "description": "Raw MusicXML 3.1 document content (bounded under Firestore 1MB document limit)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the score was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the score was last modified."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "title",
+        "composer",
+        "level",
+        "timeSignature",
+        "measures",
+        "bpm",
+        "musicXml",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserHotkeys": {
+      "title": "UserHotkeys",
+      "description": "Per-user custom MIDI chord and computer keyboard hotkey bindings.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Authentication UID matching the document ID."
+        },
+        "restartMidiNotes": {
+          "type": "array",
+          "description": "1 to 4 MIDI note numbers (21..108) pressed simultaneously to trigger Restart."
+        },
+        "stopMidiNotes": {
+          "type": "array",
+          "description": "1 to 4 MIDI note numbers (21..108) pressed simultaneously to trigger Stop / Wait Mode."
+        },
+        "restartKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Computer keyboard key name (e.g. 'r', 'F1') for Restart."
+        },
+        "stopKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Computer keyboard key name (e.g. 'Escape', 'Backspace') for Stop / Wait Mode."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when custom hotkeys were created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when custom hotkeys were last updated."
+        }
+      },
+      "required": [
+        "ownerId",
+        "restartMidiNotes",
+        "stopMidiNotes",
+        "restartKey",
+        "stopKey",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PracticeStatDoc": {
+      "title": "PracticeStatDoc",
+      "description": "Aggregated per-bar practice statistics for a user, sheet music piece, practice mode, and tempo.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Deterministic stat document ID matching the Firestore document ID."
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Authentication UID of the user."
+        },
+        "scoreId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Score identifier for which these statistics were recorded."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["wait", "tempo"],
+          "description": "Practice mode ('wait' or 'tempo')."
+        },
+        "bpm": {
+          "type": "integer",
+          "description": "Selected tempo in BPM (0 for wait mode, 30..240 for tempo mode)."
+        },
+        "totalRuns": {
+          "type": "integer",
+          "description": "Total completed practice passes recorded for this mode/tempo (0..100000)."
+        },
+        "bars": {
+          "type": "object",
+          "description": "Map of 1-indexed measure numbers (up to 1000 entries) to per-bar practice counts and grade breakdowns."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when this statistics bucket was first created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when this statistics bucket was last updated."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "scoreId",
+        "mode",
+        "bpm",
+        "totalRuns",
+        "bars",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/scores/{scoreId}": {
+      "schema": {
+        "$ref": "#/entities/UserScore"
+      },
+      "description": "Private user-uploaded and edited MusicXML scores strictly readable and writable only by ownerId == request.auth.uid."
+    },
+    "/userSettings/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserHotkeys"
+      },
+      "description": "Private per-user custom hotkey preferences strictly readable and writable only by userId == request.auth.uid."
+    },
+    "/practiceStats/{statId}": {
+      "schema": {
+        "$ref": "#/entities/PracticeStatDoc"
+      },
+      "description": "Private per-user per-bar practice statistics grouped by scoreId, mode, and BPM, strictly readable and writable only by ownerId == request.auth.uid."
+    }
+  }
+}

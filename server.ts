@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import dotenv from 'dotenv';
-import express, { NextFunction, Request, Response } from 'express';
+import express from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import http from 'http';
 import path from 'path';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
@@ -8,7 +9,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 
 dotenv.config();
 
-const PORT = Number(process.env.DEFAULT_APP_PORT || process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || process.env.DEFAULT_APP_PORT || 3000);
 
 // Sample transcribed MusicXML payload used when no live OMR key/backend is configured
 const OMR_TRANSCRIBED_XML = `<?xml version="1.0" encoding="UTF-8"?>

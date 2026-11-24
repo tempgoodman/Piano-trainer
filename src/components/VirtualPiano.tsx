@@ -1,12 +1,15 @@
-import { useState } from 'react';
-import { Eye, EyeOff, Loader2, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
+import { Eye, EyeOff, Keyboard, Loader2, RefreshCw } from 'lucide-react';
+import { usePreferences } from '../context/PreferencesProvider';
 import { usePracticeStore } from '../store/usePracticeStore';
+import { formatKeyboardKey, formatMidiChord } from '../types/hotkeys';
 import { isBlackKey, midiToNoteName } from '../types/music';
 
 interface VirtualPianoProps {
   onKeyDown: (midi: number, velocity?: number) => void;
   onKeyUp: (midi: number) => void;
   onRetryAudio?: () => void;
+  onOpenHotkeys?: () => void;
 }
 
 const START_MIDI = 48; // C3
@@ -32,8 +35,20 @@ const MIDI_TO_QWERTY: Record<number, string> = {
   76: ';',
 };
 
-export function VirtualPiano({ onKeyDown, onKeyUp, onRetryAudio }: VirtualPianoProps) {
-  const [pointerHeld, setPointerHeld] = useState(false);
+export function VirtualPiano({
+  onKeyDown,
+  onKeyUp,
+  onRetryAudio,
+  onOpenHotkeys,
+}: VirtualPianoProps) {
+  const { t } = usePreferences();
+  // Tracks active pointerId -> currently pressed MIDI note (or null if dragging outside a key)
+  const activePointerNotesRef = useRef<Map<number, number | null>>(new Map());
+
+  const onKeyDownRef = useRef(onKeyDown);
+  onKeyDownRef.current = onKeyDown;
+  const onKeyUpRef = useRef(onKeyUp);
+  onKeyUpRef.current = onKeyUp;
 
   const isAudioLoading = usePracticeStore((s) => s.isAudioLoading);
   const audioLoadProgress = usePracticeStore((s) => s.audioLoadProgress);
@@ -47,8 +62,12 @@ export function VirtualPiano({ onKeyDown, onKeyUp, onRetryAudio }: VirtualPianoP
   const wrongNote = usePracticeStore((s) => s.wrongNote);
   const showKeyLabels = usePracticeStore((s) => s.showKeyLabels);
   const setShowKeyLabels = usePracticeStore((s) => s.setShowKeyLabels);
+  const setShowVirtualPiano = usePracticeStore((s) => s.setShowVirtualPiano);
+  const isStatsMode = usePracticeStore((s) => s.isStatsMode);
   const sustainDown = usePracticeStore((s) => s.sustainDown);
   const inputMode = usePracticeStore((s) => s.inputMode);
+  const hotkeys = usePracticeStore((s) => s.hotkeys);
+  const isCustomHotkeys = usePracticeStore((s) => s.isCustomHotkeys);
 
   // Dual-Color Compare Mode State
   const playbackMode = usePracticeStore((s) => s.playbackMode);
@@ -84,101 +103,240 @@ export function VirtualPiano({ onKeyDown, onKeyUp, onRetryAudio }: VirtualPianoP
 
   const expectedByMidi = new Map(expectedNotes.map((n) => [n.midi, n]));
   const isCompare = playbackMode === 'compare';
-  const isVirtualDisabled = !isAudioReady || inputMode === 'midi' || isPlaybackRunning;
+  const isVirtualDisabled =
+    !isAudioReady || inputMode === 'midi' || isPlaybackRunning || isStatsMode;
 
-  const handlePointerStart = (midi: number) => {
+  const isMidiHeldByOtherPointer = useCallback((midi: number, excludePointerId: number): boolean => {
+    for (const [pid, heldMidi] of activePointerNotesRef.current.entries()) {
+      if (pid !== excludePointerId && heldMidi === midi) {
+        return true;
+      }
+    }
+    return false;
+  }, []);
+
+  const releasePointer = useCallback(
+    (pointerId: number, fallbackMidi?: number) => {
+      const hadPointer = activePointerNotesRef.current.has(pointerId);
+      const heldMidi = activePointerNotesRef.current.get(pointerId) ?? null;
+      activePointerNotesRef.current.delete(pointerId);
+
+      const midiToRelease = heldMidi ?? (hadPointer ? null : fallbackMidi ?? null);
+      if (midiToRelease !== null && !isMidiHeldByOtherPointer(midiToRelease, pointerId)) {
+        onKeyUpRef.current(midiToRelease);
+      }
+    },
+    [isMidiHeldByOtherPointer]
+  );
+
+  const releaseAllPointers = useCallback(() => {
+    const midis = new Set<number>();
+    for (const heldMidi of activePointerNotesRef.current.values()) {
+      if (heldMidi !== null) midis.add(heldMidi);
+    }
+    activePointerNotesRef.current.clear();
+    for (const midi of midis) {
+      onKeyUpRef.current(midi);
+    }
+  }, []);
+
+  // Global release guard: guarantees mouse-up / touch-cancel / window blur ALWAYS releases held keys
+  useEffect(() => {
+    const handleGlobalPointerEnd = (e: PointerEvent) => {
+      if (activePointerNotesRef.current.has(e.pointerId)) {
+        releasePointer(e.pointerId);
+      }
+    };
+
+    window.addEventListener('pointerup', handleGlobalPointerEnd);
+    window.addEventListener('pointercancel', handleGlobalPointerEnd);
+    window.addEventListener('blur', releaseAllPointers);
+
+    return () => {
+      window.removeEventListener('pointerup', handleGlobalPointerEnd);
+      window.removeEventListener('pointercancel', handleGlobalPointerEnd);
+      window.removeEventListener('blur', releaseAllPointers);
+      releaseAllPointers();
+    };
+  }, [releaseAllPointers, releasePointer]);
+
+  // If virtual input becomes disabled mid-press (e.g., playback starts), release any held virtual keys
+  useEffect(() => {
+    if (isVirtualDisabled && activePointerNotesRef.current.size > 0) {
+      releaseAllPointers();
+    }
+  }, [isVirtualDisabled, releaseAllPointers]);
+
+  const handlePointerStart = (e: ReactPointerEvent<HTMLButtonElement>, midi: number) => {
     if (isVirtualDisabled) return;
-    setPointerHeld(true);
-    onKeyDown(midi, 96);
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+    const prevMidi = activePointerNotesRef.current.get(e.pointerId) ?? null;
+    if (prevMidi === midi) return;
+
+    if (prevMidi !== null && !isMidiHeldByOtherPointer(prevMidi, e.pointerId)) {
+      onKeyUpRef.current(prevMidi);
+    }
+
+    activePointerNotesRef.current.set(e.pointerId, midi);
+    onKeyDownRef.current(midi, 96);
   };
 
-  const handlePointerEnd = (midi: number) => {
+  const handlePointerEnter = (e: ReactPointerEvent<HTMLButtonElement>, midi: number) => {
     if (isVirtualDisabled) return;
-    onKeyUp(midi);
+    if (!activePointerNotesRef.current.has(e.pointerId)) return;
+
+    // For mouse glissando, verify primary button is physically still held down
+    if (e.pointerType === 'mouse' && (e.buttons & 1) === 0) {
+      releasePointer(e.pointerId);
+      return;
+    }
+
+    const prevMidi = activePointerNotesRef.current.get(e.pointerId) ?? null;
+    if (prevMidi === midi) return;
+
+    if (prevMidi !== null && !isMidiHeldByOtherPointer(prevMidi, e.pointerId)) {
+      onKeyUpRef.current(prevMidi);
+    }
+
+    activePointerNotesRef.current.set(e.pointerId, midi);
+    onKeyDownRef.current(midi, 96);
+  };
+
+  const handlePointerEnd = (e: ReactPointerEvent<HTMLButtonElement>, midi: number) => {
+    releasePointer(e.pointerId, activeNotes.has(midi) ? midi : undefined);
+  };
+
+  const handlePointerLeave = (e: ReactPointerEvent<HTMLButtonElement>, midi: number) => {
+    const heldMidi = activePointerNotesRef.current.get(e.pointerId);
+    if (heldMidi !== midi) return;
+
+    if (!isMidiHeldByOtherPointer(midi, e.pointerId)) {
+      onKeyUpRef.current(midi);
+    }
+
+    // Keep pointer tracked for glissando only while primary button is still physically pressed
+    if (e.pointerType === 'mouse' && (e.buttons & 1) === 0) {
+      activePointerNotesRef.current.delete(e.pointerId);
+    } else {
+      activePointerNotesRef.current.set(e.pointerId, null);
+    }
   };
 
   return (
     <section
       aria-label="Virtual piano keyboard"
       className="w-full max-w-[1360px] mx-auto px-6 pb-6 pt-1"
-      onPointerUp={() => setPointerHeld(false)}
-      onPointerLeave={() => setPointerHeld(false)}
     >
       {/* Keyboard Header Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4 mb-2.5">
-        <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600">
-          <span className="font-semibold text-slate-800">Piano Keyboard (C3 – C6)</span>
-          <span aria-hidden="true" className="text-slate-300">·</span>
+        <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600 dark:text-slate-400">
+          <span className="font-semibold text-slate-800 dark:text-slate-100">
+            {t('piano.header')}
+          </span>
+          <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">·</span>
           {isCompare ? (
             <>
               <span className="inline-flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-xs bg-emerald-600 inline-block" aria-hidden="true" />
-                <span>Expected (Computer)</span>
+                <span>{t('piano.expectedComputer')}</span>
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-xs bg-blue-600 inline-block" aria-hidden="true" />
-                <span>Recorded (Match)</span>
+                <span>{t('piano.recordedMatch')}</span>
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-xs bg-red-600 inline-block" aria-hidden="true" />
-                <span>Recorded (Wrong Pitch)</span>
+                <span>{t('piano.recordedWrong')}</span>
               </span>
             </>
           ) : (
             <>
               <span className="inline-flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-xs bg-sky-600 inline-block" aria-hidden="true" />
-                <span>Right Hand Target (RH)</span>
+                <span>{t('piano.rhTarget')}</span>
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-xs bg-emerald-600 inline-block" aria-hidden="true" />
-                <span>Left Hand Target (LH)</span>
+                <span>{t('piano.lhTarget')}</span>
               </span>
             </>
           )}
           {sustainDown && (
             <>
-              <span aria-hidden="true" className="text-slate-300">·</span>
-              <span className="font-semibold text-amber-700">Sustain Pedal Active</span>
+              <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">·</span>
+              <span className="font-semibold text-amber-700 dark:text-amber-400">
+                {t('piano.sustainActive')}
+              </span>
             </>
           )}
         </div>
 
-        <div className="flex items-center gap-4">
-          <span className="hidden xl:inline text-xs text-slate-500 font-mono-tabular">
-            MIDI Hotkeys: A0+B0+C1 Restart · A7+B7+C8 Stop
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs text-slate-600 dark:text-slate-300 font-mono-tabular">
+            <span className="font-sans font-medium text-slate-500 dark:text-slate-400">
+              {t('piano.hotkeysLabel')}
+            </span>{' '}
+            {t('piano.restartLabel')} {formatMidiChord(hotkeys.restartMidiNotes)} ({formatKeyboardKey(hotkeys.restartKey)})
+            <span aria-hidden="true" className="mx-1.5 text-slate-300 dark:text-slate-700">·</span>
+            {t('piano.stopLabel')} {formatMidiChord(hotkeys.stopMidiNotes)} ({formatKeyboardKey(hotkeys.stopKey)})
           </span>
-          <span className="hidden lg:inline text-xs text-slate-500">
-            Keys A–L play C4–D5
-          </span>
+
+          {onOpenHotkeys && (
+            <button
+              type="button"
+              onClick={onOpenHotkeys}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-md border transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600 ${
+                isCustomHotkeys
+                  ? 'bg-sky-50 dark:bg-sky-950/50 text-sky-800 dark:text-sky-300 border-sky-200 dark:border-sky-800 hover:bg-sky-100'
+                  : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700'
+              }`}
+            >
+              <Keyboard className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>
+                {isCustomHotkeys ? t('controls.hotkeysCustom') : t('controls.hotkeys')}
+              </span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setShowKeyLabels(!showKeyLabels)}
-            className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 transition-colors"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0"
           >
             {showKeyLabels ? (
               <>
                 <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Hide Key Names</span>
+                <span>{t('piano.hideKeyNames')}</span>
               </>
             ) : (
               <>
                 <Eye className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Show Key Names</span>
+                <span>{t('piano.showKeyNames')}</span>
               </>
             )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowVirtualPiano(false)}
+            title={t('piano.hideKeysTitle')}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-md transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600"
+          >
+            <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>{t('piano.hideKeys')}</span>
           </button>
         </div>
       </div>
 
       {/* Piano Keybed */}
-      <div className="relative w-full h-44 md:h-48 bg-slate-900 p-2 rounded-xl border border-slate-300 select-none touch-none">
+      <div className="relative w-full h-44 md:h-48 bg-slate-900 dark:bg-black p-2 rounded-xl border border-slate-300 dark:border-slate-700 select-none touch-none">
         {!isAudioReady && (
           <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/55 backdrop-blur-[1px] rounded-xl px-4">
-            <div className="bg-white border border-slate-200 rounded-lg shadow-md px-5 py-3.5 flex flex-col items-center gap-2 text-center max-w-sm">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg shadow-md px-5 py-3.5 flex flex-col items-center gap-2 text-center max-w-sm">
               {audioError ? (
                 <>
-                  <p className="text-xs font-semibold text-red-700">{audioError}</p>
+                  <p className="text-xs font-semibold text-red-700 dark:text-red-400">{audioError}</p>
                   {onRetryAudio && (
                     <button
                       type="button"
@@ -186,21 +344,24 @@ export function VirtualPiano({ onKeyDown, onKeyUp, onRetryAudio }: VirtualPianoP
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-md transition-colors"
                     >
                       <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Retry Piano Audio</span>
+                      <span>{t('piano.retryAudio')}</span>
                     </button>
                   )}
                 </>
               ) : (
                 <>
-                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-900">
-                    <Loader2 className="w-3.5 h-3.5 text-sky-600 animate-spin" aria-hidden="true" />
+                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-slate-100">
+                    <Loader2 className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400 animate-spin" aria-hidden="true" />
                     <span>
                       {isAudioLoading
-                        ? `Loading ${audioEngineLabel}… ${audioLoadProgress}%`
-                        : 'Preparing Grand Piano Audio…'}
+                        ? t('piano.loadingEngine', {
+                            label: audioEngineLabel,
+                            progress: audioLoadProgress,
+                          })
+                        : t('piano.preparingAudio')}
                     </span>
                   </div>
-                  <div className="w-56 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                  <div className="w-56 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
                     <div
                       className="h-full bg-sky-600 transition-all duration-200"
                       style={{ width: `${audioLoadProgress}%` }}
@@ -214,8 +375,8 @@ export function VirtualPiano({ onKeyDown, onKeyUp, onRetryAudio }: VirtualPianoP
 
         {isAudioReady && inputMode === 'midi' && !isPlaybackRunning && (
           <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/20 rounded-xl pointer-events-none">
-            <span className="px-3 py-1.5 text-xs font-semibold bg-white text-slate-900 rounded-md shadow-sm">
-              Input set to MIDI Piano Only
+            <span className="px-3 py-1.5 text-xs font-semibold bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-slate-700 rounded-md shadow-sm">
+              {t('piano.midiOnlyNotice')}
             </span>
           </div>
         )}
@@ -282,15 +443,12 @@ export function VirtualPiano({ onKeyDown, onKeyUp, onRetryAudio }: VirtualPianoP
                 aria-label={`Piano key ${name}`}
                 onPointerDown={(e) => {
                   e.preventDefault();
-                  handlePointerStart(midi);
+                  handlePointerStart(e, midi);
                 }}
-                onPointerEnter={() => {
-                  if (pointerHeld) handlePointerStart(midi);
-                }}
-                onPointerUp={() => handlePointerEnd(midi)}
-                onPointerLeave={() => {
-                  if (activeNotes.has(midi)) handlePointerEnd(midi);
-                }}
+                onPointerEnter={(e) => handlePointerEnter(e, midi)}
+                onPointerUp={(e) => handlePointerEnd(e, midi)}
+                onPointerCancel={(e) => handlePointerEnd(e, midi)}
+                onPointerLeave={(e) => handlePointerLeave(e, midi)}
                 className={`relative flex-1 h-full border-r last:border-r-0 border-slate-300 rounded-b-md flex flex-col justify-end items-center pb-2 transition-transform duration-75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600 ${keySurface}`}
               >
                 {badgeText && (
@@ -375,21 +533,15 @@ export function VirtualPiano({ onKeyDown, onKeyUp, onRetryAudio }: VirtualPianoP
                 onPointerDown={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  handlePointerStart(midi);
+                  handlePointerStart(e, midi);
                 }}
                 onPointerEnter={(e) => {
-                  if (pointerHeld) {
-                    e.stopPropagation();
-                    handlePointerStart(midi);
-                  }
-                }}
-                onPointerUp={(e) => {
                   e.stopPropagation();
-                  handlePointerEnd(midi);
+                  handlePointerEnter(e, midi);
                 }}
-                onPointerLeave={() => {
-                  if (activeNotes.has(midi)) handlePointerEnd(midi);
-                }}
+                onPointerUp={(e) => handlePointerEnd(e, midi)}
+                onPointerCancel={(e) => handlePointerEnd(e, midi)}
+                onPointerLeave={(e) => handlePointerLeave(e, midi)}
                 className={`absolute top-0 z-20 h-[62%] border rounded-b-md shadow-md flex flex-col justify-end items-center pb-1.5 transition-transform duration-75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 ${keySurface}`}
               >
                 {badgeText && <span className="text-[8px] font-bold mb-0.5">{badgeText}</span>}

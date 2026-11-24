@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, FileMusic, ImageUp, Loader2, X } from 'lucide-react';
+import { useFirebase } from '../context/FirebaseProvider';
+import { usePreferences } from '../context/PreferencesProvider';
+import { makeValidScoreId, saveUserScoreToFirestore } from '../services/firestoreScores';
 import { usePracticeStore } from '../store/usePracticeStore';
 import { OMRProgressMessage, ScorePiece } from '../types/music';
 
@@ -106,12 +109,17 @@ async function parseJsonResponseSafely<T>(res: Response): Promise<{ ok: true; da
 }
 
 export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
+  const { user, resendVerificationEmail, refreshUserVerification } = useFirebase();
+  const { t } = usePreferences();
   const [title, setTitle] = useState('');
   const [jobProgress, setJobProgress] = useState<OMRProgressMessage | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [verifyNotice, setVerifyNotice] = useState<string | null>(null);
+  const [isCheckingVerify, setIsCheckingVerify] = useState(false);
   const [backendUnavailable, setBackendUnavailable] = useState(false);
   const [pendingFilename, setPendingFilename] = useState<string>('sheet-music.png');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isSavingCloud, setIsSavingCloud] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pollTimerRef = useRef<number | null>(null);
@@ -138,7 +146,13 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
 
   if (!isOpen) return null;
 
-  const loadXmlIntoStudio = (xmlText: string, fileName: string) => {
+  const loadXmlIntoStudio = async (xmlText: string, fileName: string) => {
+    if (!user) {
+      setErrorMsg('Please sign in to upload and save sheet music to your private library.');
+      setIsProcessing(false);
+      return;
+    }
+
     const parser = new DOMParser();
     const doc = parser.parseFromString(xmlText, 'application/xml');
     if (doc.querySelector('parsererror')) {
@@ -157,7 +171,8 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
       title.trim() || titleNode || fileName.replace(/\.(musicxml|xml|png|jpe?g)$/i, '');
 
     const piece: ScorePiece = {
-      id: `custom-${Date.now()}`,
+      id: makeValidScoreId('sheet'),
+      ownerId: user.uid,
       title: cleanName,
       composer: composerNode || 'Uploaded Score',
       level: 'Custom',
@@ -165,15 +180,41 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
       measures: Math.max(1, measureNodes.length),
       bpm: 80,
       musicXml: xmlText,
+      isCloudSaved: true,
     };
 
     cleanupStreams();
-    addCustomScore(piece);
-    setIsProcessing(false);
-    setJobProgress(null);
-    setBackendUnavailable(false);
-    setTitle('');
-    onClose();
+    setIsSavingCloud(true);
+    setErrorMsg(null);
+
+    try {
+      const savedPiece = await saveUserScoreToFirestore(user.uid, piece);
+      addCustomScore(savedPiece);
+      setIsProcessing(false);
+      setIsSavingCloud(false);
+      setJobProgress(null);
+      setBackendUnavailable(false);
+      setTitle('');
+      onClose();
+    } catch (err) {
+      let friendly = 'Unable to save sheet music to your private cloud library.';
+      if (err instanceof Error) {
+        try {
+          const parsed = JSON.parse(err.message) as { error?: string };
+          if (parsed?.error?.toLowerCase().includes('permission')) {
+            friendly =
+              'Permission denied saving to cloud storage. Please ensure your account email is verified and try again.';
+          } else if (parsed?.error) {
+            friendly = parsed.error;
+          }
+        } catch {
+          friendly = err.message;
+        }
+      }
+      setErrorMsg(friendly);
+      setIsProcessing(false);
+      setIsSavingCloud(false);
+    }
   };
 
   const handleJobPayload = (payload: OMRProgressMessage, fileName: string) => {
@@ -184,7 +225,7 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
       completedRef.current = true;
       cleanupStreams();
       window.setTimeout(() => {
-        loadXmlIntoStudio(payload.musicxml!, fileName);
+        void loadXmlIntoStudio(payload.musicxml!, fileName);
       }, 450);
     } else if (payload.status === 'error') {
       completedRef.current = true;
@@ -239,7 +280,7 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
           setErrorMsg('The selected XML file is not a valid MusicXML score.');
           return;
         }
-        loadXmlIntoStudio(text, file.name);
+        await loadXmlIntoStudio(text, file.name);
       } catch {
         setErrorMsg('Failed to read the MusicXML file.');
       }
@@ -336,16 +377,16 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 dark:bg-black/70 p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="upload-modal-title"
     >
-      <div className="w-full max-w-lg bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
+      <div className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
-          <h2 id="upload-modal-title" className="font-display text-lg font-semibold text-slate-900">
-            Upload Sheet Music
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
+          <h2 id="upload-modal-title" className="font-display text-lg font-semibold text-slate-900 dark:text-slate-100">
+            {t('upload.title')}
           </h2>
           <button
             type="button"
@@ -359,7 +400,7 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
               onClose();
             }}
             aria-label="Close upload dialog"
-            className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 transition-colors"
+            className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
@@ -367,18 +408,64 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
 
         {/* Body */}
         <div className="p-6 space-y-5">
+          {user && !user.emailVerified && (
+            <div className="p-3.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-lg text-xs text-amber-900 dark:text-amber-200 space-y-2">
+              <p className="font-semibold">
+                Please verify your email ({user.email}) before saving sheets to the cloud.
+              </p>
+              {verifyNotice && <p className="text-amber-800 dark:text-amber-300">{verifyNotice}</p>}
+              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                <button
+                  type="button"
+                  disabled={isCheckingVerify}
+                  onClick={async () => {
+                    setIsCheckingVerify(true);
+                    setVerifyNotice(null);
+                    try {
+                      const ok = await refreshUserVerification();
+                      setVerifyNotice(
+                        ok
+                          ? 'Email verified! You can now upload sheets.'
+                          : 'Still waiting for verification. Click the link in your email first.'
+                      );
+                    } finally {
+                      setIsCheckingVerify(false);
+                    }
+                  }}
+                  className="px-3 py-1.5 font-semibold text-white bg-amber-700 hover:bg-amber-800 disabled:opacity-50 rounded-md transition-colors"
+                >
+                  {isCheckingVerify ? t('auth.checking') : t('auth.verifiedShort')}
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await resendVerificationEmail();
+                      setVerifyNotice('Verification email resent! Please check your inbox.');
+                    } catch {
+                      setVerifyNotice('Please wait a moment before resending the verification email.');
+                    }
+                  }}
+                  className="px-3 py-1.5 font-semibold text-amber-900 dark:text-amber-200 bg-white dark:bg-slate-800 border border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-950/60 rounded-md transition-colors"
+                >
+                  {t('auth.resendEmailShort')}
+                </button>
+              </div>
+            </div>
+          )}
+
           <div>
-            <label htmlFor="piece-title-input" className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Piece Title (Optional)
+            <label htmlFor="piece-title-input" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+              {t('upload.pieceTitle')}
             </label>
             <input
               id="piece-title-input"
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g., Fur Elise — Page 1"
+              placeholder={t('upload.pieceTitlePlaceholder')}
               disabled={isProcessing}
-              className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-600"
+              className="w-full px-3.5 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-600"
             />
           </div>
 
@@ -388,7 +475,7 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
               e.preventDefault();
               if (!isProcessing) void handleFileSelected(e.dataTransfer.files[0]);
             }}
-            className="border-2 border-dashed border-slate-300 hover:border-sky-500 bg-slate-50 rounded-xl p-7 text-center transition-colors"
+            className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-sky-500 dark:hover:border-sky-500 bg-slate-50 dark:bg-slate-800/50 rounded-xl p-7 text-center transition-colors"
           >
             <input
               ref={fileInputRef}
@@ -403,15 +490,15 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
             />
 
             <div className="flex justify-center gap-3 text-slate-500 mb-3">
-              <ImageUp className="w-6 h-6 text-sky-600" aria-hidden="true" />
-              <FileMusic className="w-6 h-6 text-emerald-600" aria-hidden="true" />
+              <ImageUp className="w-6 h-6 text-sky-600 dark:text-sky-400" aria-hidden="true" />
+              <FileMusic className="w-6 h-6 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
             </div>
 
-            <p className="text-sm font-semibold text-slate-900 mb-1">
-              Drop a sheet music photo or MusicXML file
+            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-1">
+              {t('upload.dropTitle')}
             </p>
-            <p className="text-xs text-slate-500 mb-4">
-              Supports JPG / PNG (via async OMR pipeline) or .musicxml / .xml
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+              {t('upload.dropSubtitle')}
             </p>
 
             <button
@@ -420,25 +507,25 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
               onClick={() => fileInputRef.current?.click()}
               className="px-4 py-2 text-sm font-semibold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-50 rounded-lg transition-colors"
             >
-              Choose File
+              {t('upload.chooseFile')}
             </button>
           </div>
 
           {/* Async OMR Progress */}
           {jobProgress && (
-            <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5">
-              <div className="flex items-center justify-between text-xs font-semibold text-slate-800">
+            <div className="p-4 bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2.5">
+              <div className="flex items-center justify-between text-xs font-semibold text-slate-800 dark:text-slate-200">
                 <span className="inline-flex items-center gap-2">
                   {jobProgress.status === 'completed' ? (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600" aria-hidden="true" />
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
                   ) : (
-                    <Loader2 className="w-4 h-4 text-sky-600 animate-spin" aria-hidden="true" />
+                    <Loader2 className="w-4 h-4 text-sky-600 dark:text-sky-400 animate-spin" aria-hidden="true" />
                   )}
                   <span>{jobProgress.message}</span>
                 </span>
-                <span className="font-mono-tabular text-slate-600">{jobProgress.progress}%</span>
+                <span className="font-mono-tabular text-slate-600 dark:text-slate-400">{jobProgress.progress}%</span>
               </div>
-              <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+              <div className="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-sky-600 transition-all duration-300"
                   style={{ width: `${jobProgress.progress}%` }}
@@ -447,8 +534,15 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
             </div>
           )}
 
+          {isSavingCloud && (
+            <div className="p-3.5 bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800 rounded-lg flex items-center gap-2 text-xs font-semibold text-sky-800 dark:text-sky-200">
+              <Loader2 className="w-4 h-4 animate-spin text-sky-600 dark:text-sky-400" aria-hidden="true" />
+              <span>{t('upload.savingCloud')}</span>
+            </div>
+          )}
+
           {errorMsg && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs font-medium text-red-700 space-y-2">
+            <div className="p-3 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg text-xs font-medium text-red-700 dark:text-red-300 space-y-2">
               <div className="flex items-start gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
                 <span>{errorMsg}</span>
@@ -456,10 +550,11 @@ export function OmrUploadModal({ isOpen, onClose }: OmrUploadModalProps) {
               {backendUnavailable && (
                 <button
                   type="button"
-                  onClick={() => loadXmlIntoStudio(FALLBACK_SAMPLE_XML, pendingFilename)}
-                  className="px-3 py-1.5 text-xs font-semibold text-slate-900 bg-white border border-slate-300 hover:bg-slate-50 rounded-md transition-colors"
+                  disabled={isSavingCloud}
+                  onClick={() => void loadXmlIntoStudio(FALLBACK_SAMPLE_XML, pendingFilename)}
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 rounded-md transition-colors"
                 >
-                  Load Sample Transcribed Etude
+                  {t('upload.loadSample')}
                 </button>
               )}
             </div>

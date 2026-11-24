@@ -5,7 +5,7 @@ import { buildComputerTimeline, PlaybackScheduler } from '../engines/PlaybackSch
 import { usePracticeStore } from '../store/usePracticeStore';
 import { PlaybackMode } from '../types/music';
 import { resetAllOSMDNoteColors } from '../utils/osmdColoring';
-import { jumpCursorToMeasure } from './usePracticeMode';
+import { jumpCursorToMeasure, syncSheetGuideVisibility } from './usePracticeMode';
 
 interface UsePlaybackEngineOptions {
   osmdRef: React.MutableRefObject<OpenSheetMusicDisplay | null>;
@@ -72,6 +72,7 @@ export function usePlaybackEngine({ osmdRef, onResetPractice }: UsePlaybackEngin
         greenCursor.reset();
       }
       greenCursor.show();
+      syncSheetGuideVisibility(osmd, true);
       primaryCursorIndexRef.current = 0;
 
       if (ghostCursor) {
